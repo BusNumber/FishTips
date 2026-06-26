@@ -1,0 +1,16 @@
+## Interface: 120007
+## Title: Fish & Tips
+## Notes: Per-location catch tracking with fishing-only auto-loot, double-right-click cast, and Auctionator price integration.
+## Version: 1.0.0
+## Author: BusNumber
+## Category: Professions
+## IconTexture: Interface\Icons\inv_fishingpole_05
+## X-License: GPLv3
+## X-Website: https://github.com/BusNumber/FishTips
+## X-Donate: https://buymeacoffee.com/busnumber
+## SavedVariables: FishTipsDB
+
+Core.lua
+Casting.lua
+UI.lua
+Settings.lua

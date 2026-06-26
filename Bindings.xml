@@ -1,0 +1,14 @@
+<Bindings>
+  <!-- The player assigns a key to this binding; Casting.lua override-binds that key to cast
+       Fishing by name (SetOverrideBindingSpell). The body re-applies that override in case it was
+       cleared, so the key keeps working. Label/category come from BINDING_NAME_FISHTIPSCAST in
+       Casting.lua and the category below.
+
+       category="Fish & Tips " gives the binding its own top-level category in the Key Bindings UI.
+       A plain multi-word / trailing-space value (not a global token) is taint-safe. Bindings.xml
+       is auto-loaded by the client, so it is NOT listed in the .toc (the generic UI XML loader
+       does not understand the Binding schema). -->
+  <Binding name="FISHTIPSCAST" category="Fish &amp; Tips ">
+    FishTips_RunKeybind()
+  </Binding>
+</Bindings>
