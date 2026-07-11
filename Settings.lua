@@ -8,6 +8,8 @@ local addonName, ns = ...
 -- state are additive display settings, so they do NOT bump DB_VERSION; defaults are filled
 -- with `== nil` checks so a persisted `false` survives.
 
+local L = ns.L  -- user-facing strings go through the locale table (English keys)
+
 local DEFAULTS = {
   theme = "blend",          -- locked to "blend"; engine kept for future custom themes
   statMode = "session",     -- "session" | "lifetime"
@@ -94,18 +96,18 @@ end
 -- getter), so the wordings stay current.
 local function CastModeOptions()
   local c = Settings.CreateControlTextContainer()
-  c:Add("off",         "Disabled")
-  c:Add("doubleclick", "Double right-click")
-  c:Add("key",         "Keybind (set in Key Bindings)")
-  c:Add("both",        "Both")
+  c:Add("off",         L["Disabled"])
+  c:Add("doubleclick", L["Double right-click"])
+  c:Add("key",         L["Keybind (set in Key Bindings)"])
+  c:Add("both",        L["Both"])
   return c:GetData()
 end
 
 local function AutoOpenOptions()
   local c = Settings.CreateControlTextContainer()
-  c:Add("off",       "Disabled")
-  c:Add("full",      "Full window")
-  c:Add("collapsed", "Compact view")
+  c:Add("off",       L["Disabled"])
+  c:Add("full",      L["Full window"])
+  c:Add("collapsed", L["Compact view"])
   return c:GetData()
 end
 
@@ -124,10 +126,10 @@ function RegisterPanel()
   end
 
   -- Casting -------------------------------------------------------------------------------
-  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Casting"))
-  local castInit = Settings.CreateDropdown(category, Register("castMode", "Auto-cast"),
+  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Casting"]))
+  local castInit = Settings.CreateDropdown(category, Register("castMode", L["Auto-cast"]),
     CastModeOptions,
-    "How casting is triggered. Off by default -- pick a mode to enable click-to-cast.")
+    L["How casting is triggered. Off by default -- pick a mode to enable click-to-cast."])
   Settings.SetOnValueChangedCallback(addonName .. "_castMode", function()
     if ns.Casting and ns.Casting.ApplyMode then ns.Casting.ApplyMode() end
   end)
@@ -135,8 +137,8 @@ function RegisterPanel()
   local delayOptions = Settings.CreateSliderOptions(0.1, 1.0, 0.05)
   delayOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right,
     function(value) return string.format("%.2fs", value) end)
-  local delayInit = Settings.CreateSlider(category, Register("castDelay", "Double-click delay"),
-    delayOptions, "How quickly the two right-clicks must land to count as a double-click.")
+  local delayInit = Settings.CreateSlider(category, Register("castDelay", L["Double-click delay"]),
+    delayOptions, L["How quickly the two right-clicks must land to count as a double-click."])
   -- Only meaningful for the double-click paths; gray it out otherwise.
   delayInit:SetParentInitializer(castInit, function()
     return settings.castMode == "doubleclick" or settings.castMode == "both"
@@ -144,22 +146,21 @@ function RegisterPanel()
 
   -- Looting -------------------------------------------------------------------------------
   -- No side-effect callback: Core's loot handler reads settings.autoLoot live on each catch.
-  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Looting"))
-  Settings.CreateCheckbox(category, Register("autoLoot", "Auto-loot catches"),
-    "Automatically loot everything from a catch. Only applies to fishing loot.")
+  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Looting"]))
+  Settings.CreateCheckbox(category, Register("autoLoot", L["Auto-loot catches"]),
+    L["Automatically loot everything from a catch. Only applies to fishing loot."])
 
   -- Stats window --------------------------------------------------------------------------
-  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Stats window"))
-  Settings.CreateDropdown(category, Register("autoOpen", "Auto-open when fishing"), AutoOpenOptions,
-    "What to show when you start fishing: nothing, the full stats window, or the compact strip."
-      .. " Only acts when the window isn't already open.")
-  Settings.CreateCheckbox(category, Register("showMinimap", "Show minimap button"),
-    "Show the Fish & Tips button on the minimap.")
+  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Stats window"]))
+  Settings.CreateDropdown(category, Register("autoOpen", L["Auto-open when fishing"]), AutoOpenOptions,
+    L["What to show when you start fishing: nothing, the full stats window, or the compact strip. Only acts when the window isn't already open."])
+  Settings.CreateCheckbox(category, Register("showMinimap", L["Show minimap button"]),
+    L["Show the Fish & Tips button on the minimap."])
   Settings.SetOnValueChangedCallback(addonName .. "_showMinimap", function()
     if ns.UI and ns.UI.SetMinimapShown then ns.UI.SetMinimapShown(settings.showMinimap) end
   end)
-  Settings.CreateCheckbox(category, Register("includeJunk", "Include junk items"),
-    "Show gray (junk) catches in the stats window and totals.")
+  Settings.CreateCheckbox(category, Register("includeJunk", L["Include junk items"]),
+    L["Show gray (junk) catches in the stats window and totals."])
   Settings.SetOnValueChangedCallback(addonName .. "_includeJunk", function()
     if ns.FireRefresh then ns.FireRefresh() end
   end)
@@ -167,8 +168,8 @@ function RegisterPanel()
   -- Auctionator is installed (ns.PricingActive gates on the API being present). Kept a plain
   -- top-level checkbox -- the only way to gray a Settings control out (SetParentInitializer)
   -- visually nests it under another, which we don't want. Without Auctionator it's simply inert.
-  Settings.CreateCheckbox(category, Register("auctionatorPrices", "Show Auctionator prices"),
-    "Show estimated gold value (from Auctionator) for the current session. Requires the Auctionator addon.")
+  Settings.CreateCheckbox(category, Register("auctionatorPrices", L["Show Auctionator prices"]),
+    L["Show estimated gold value (from Auctionator) for the current session. Requires the Auctionator addon."])
   Settings.SetOnValueChangedCallback(addonName .. "_auctionatorPrices", function()
     if ns.FireRefresh then ns.FireRefresh() end
   end)
@@ -182,10 +183,10 @@ function RegisterPanel()
   local donate = C_AddOns.GetAddOnMetadata(addonName, "X-Donate")
   if donate then
     layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(
-      "Enjoying the addon? Buy me a coffee: " .. donate:gsub("^https?://", "")))
+      (L["Enjoying the addon? Buy me a coffee: %s"]):format(donate:gsub("^https?://", ""))))
   end
   layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(
-    "Version " .. (C_AddOns.GetAddOnMetadata(addonName, "Version") or "?")))
+    (L["Version %s"]):format(C_AddOns.GetAddOnMetadata(addonName, "Version") or "?")))
 
   Settings.RegisterAddOnCategory(category)
 end
@@ -217,7 +218,7 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if rest == "classic" or rest == "modern" or rest == "blend" then
       ns.SetSetting("theme", rest)
       if ns.UI and ns.UI.ApplyTheme then ns.UI.ApplyTheme(rest) end
-      say("theme set to " .. rest .. ".")
+      say((L["theme set to %s."]):format(rest))
     else
       say("theme: classic | modern | blend")
     end
@@ -225,14 +226,14 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if rest == "off" or rest == "doubleclick" or rest == "key" or rest == "both" then
       settings.castMode = rest
       if ns.Casting and ns.Casting.ApplyMode then ns.Casting.ApplyMode() end
-      say("cast mode: " .. rest .. ".")
+      say((L["cast mode: %s."]):format(rest))
     else
       say("cast: off | doubleclick | key | both")
     end
   elseif cmd == "autoloot" then
     if rest == "on" or rest == "off" then
       settings.autoLoot = (rest == "on")
-      say("auto-loot " .. rest .. ".")
+      say((L["auto-loot %s."]):format(rest))
     else
       say("autoloot: on | off  (currently " .. (settings.autoLoot ~= false and "on" or "off") .. ")")
     end
@@ -240,7 +241,7 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if rest == "on" or rest == "off" then
       settings.includeJunk = (rest == "on")
       if ns.FireRefresh then ns.FireRefresh() end
-      say("junk items " .. rest .. ".")
+      say((L["junk items %s."]):format(rest))
     else
       say("junk: on | off  (currently " .. (settings.includeJunk ~= false and "on" or "off") .. ")")
     end
@@ -248,7 +249,7 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if rest == "on" or rest == "off" then
       settings.auctionatorPrices = (rest == "on")
       if ns.FireRefresh then ns.FireRefresh() end
-      say("auctionator prices " .. rest .. ".")
+      say((L["auctionator prices %s."]):format(rest))
     else
       say("auc: on | off  (currently " .. (settings.auctionatorPrices and "on" or "off") .. ")")
     end

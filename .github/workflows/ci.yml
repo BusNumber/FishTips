@@ -1,0 +1,29 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  luacheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: lunarmodules/luacheck@v1
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install LuaJIT
+        run: sudo apt-get update && sudo apt-get install -y luajit
+      # Syntax-compile EVERY Lua file (the harness never loads UI.lua / Casting.lua,
+      # so the test run alone would not catch a syntax error there).
+      - name: Syntax check
+        run: |
+          for f in *.lua tests/*.lua; do
+            luajit -bl "$f" > /dev/null || exit 1
+          done
+      - name: Run data-layer tests
+        run: luajit tests/run_tests.lua

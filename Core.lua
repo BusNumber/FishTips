@@ -187,7 +187,7 @@ function ns.GetScopes()
     list[#list + 1] = { key = key, name = c.display or key }
   end
   table.sort(list, function(a, b) return a.name < b.name end)
-  list[#list + 1] = { key = "account", name = "Warband" }
+  list[#list + 1] = { key = "account", name = ns.L["Warband"] }
   return list
 end
 
@@ -405,25 +405,33 @@ ns.demo = {
 -- Fishing spell identity + catch write-path
 -- ---------------------------------------------------------------------------
 -- Fishing fires TWO spells on a real cast (confirmed in-game via UNIT_SPELLCAST_SUCCEEDED):
--- 131476 is the spell the player actively casts; it triggers 131474 (the channel/effect). So we
--- CAST 131476 (the directly-castable one -- CastSpellByID(131474) silently no-ops), and DETECT on
--- either id (or the shared name "Fishing", for pole-override variants).
-local FISHING_SPELL_ID = 131476    -- castable; Casting.lua casts this via CastSpellByID
+-- 131476 is the spell the player actively casts; it triggers 131474 (the channel/effect).
+-- Casting.lua casts it BY NAME through the secure binding system (SetOverrideBindingSpell)
+-- -- CastSpellByID/Name silently no-op for this profession spell on 12.0 -- and detection
+-- matches either id (or the shared localized name, for pole-override variants).
+local FISHING_SPELL_ID = 131476    -- the spell the player casts
 local FISHING_CHANNEL_ID = 131474  -- triggered channel; also matched for detection
-ns.FishingSpellID = FISHING_SPELL_ID
+local FISHING_BASE_ID = 7620       -- classic base "Fishing" skill; most reliable name source
 
+-- The localized Fishing name -- the ONE resolver for both detection (here) and the cast
+-- (Casting.lua override-binds the key to cast by this name, like `/cast Fishing`).
+-- Memoized only on a SUCCESSFUL lookup: the non-localized "Fishing" literal is returned
+-- per-call and never cached, so an early nil lookup can't poison the name for the whole
+-- session (on a non-English client a cached literal would silently break the cast).
 local fishingName
 function ns.FishingSpellName()
-  if not fishingName then
-    if C_Spell and C_Spell.GetSpellInfo then
-      local info = C_Spell.GetSpellInfo(FISHING_SPELL_ID)
-      fishingName = info and info.name
-    elseif GetSpellInfo then
-      fishingName = GetSpellInfo(FISHING_SPELL_ID)
-    end
-    fishingName = fishingName or "Fishing"
+  if fishingName then return fishingName end
+  local n
+  if C_Spell and C_Spell.GetSpellName then
+    n = C_Spell.GetSpellName(FISHING_BASE_ID) or C_Spell.GetSpellName(FISHING_CHANNEL_ID)
+        or C_Spell.GetSpellName(FISHING_SPELL_ID)
   end
-  return fishingName
+  if not n and GetSpellInfo then
+    n = GetSpellInfo(FISHING_BASE_ID) or GetSpellInfo(FISHING_CHANNEL_ID)
+        or GetSpellInfo(FISHING_SPELL_ID)
+  end
+  if n then fishingName = n end
+  return n or "Fishing"
 end
 
 local function spellNameByID(spellID)
@@ -443,10 +451,11 @@ end
 local function currentZoneSub()
   local zone = GetRealZoneText()
   if not zone or zone == "" then zone = UNKNOWN end
-  return zone, (GetSubZoneText() or "")
+  local mapID = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player") or nil
+  return zone, (GetSubZoneText() or ""), mapID
 end
 
-local function bucketSub(bucket, zone, sub)
+local function bucketSub(bucket, zone, sub, mapID)
   bucket.zones = bucket.zones or {}
   local z = bucket.zones[zone]
   if not z then z = { subs = {} }; bucket.zones[zone] = z end
@@ -454,14 +463,21 @@ local function bucketSub(bucket, zone, sub)
   local s = z.subs[sub]
   if not s then s = { items = {} }; z.subs[sub] = s end
   s.items = s.items or {}
+  -- Stamp the RAW uiMapID (GetBestMapForUnit -- may be a micro/floor map) on both levels.
+  -- Written for the future locale-safe re-keying; no reader consumes it yet. Never
+  -- overwrite a stored id with nil (a loading-screen nil must not erase good data).
+  if mapID then
+    z.mapID = mapID
+    s.mapID = mapID
+  end
   return s
 end
 
 -- Record one fished item into a single bucket (lifetime or session). Keyed by itemID, so
 -- the item is always referenceable programmatically; name/quality/link are stored for lazy
 -- display and backfilled if an earlier record lacked them.
-local function recordInto(bucket, zone, sub, itemID, count, name, quality, link)
-  local s = bucketSub(bucket, zone, sub)
+local function recordInto(bucket, zone, sub, itemID, count, name, quality, link, mapID)
+  local s = bucketSub(bucket, zone, sub, mapID)
   local it = s.items[itemID]
   if not it then
     it = { count = 0, name = name, quality = quality, link = link }
@@ -510,42 +526,75 @@ function ns.ResetSession()
   ns.FireRefresh()
 end
 
-function ns.RecordCatch(itemID, count, name, quality, link)
+-- Internal recorder: writes the catch, fires nothing. The loot handler batches many of
+-- these into ONE refresh per loot window; the public seam below keeps the old behavior.
+-- Returns true when the catch was actually recorded.
+local function recordCatchNoRefresh(itemID, count, name, quality, link)
   if not itemID then return end
   local key = ns.CharKey()
   if not key then return end
   count = count or 1
-  local zone, sub = currentZoneSub()
+  local zone, sub, mapID = currentZoneSub()
   local life = lifetimeOf(key)
-  if life then recordInto(life, zone, sub, itemID, count, name, quality, link) end
-  recordInto(sessionOf(key), zone, sub, itemID, count, name, quality, link)
+  if life then recordInto(life, zone, sub, itemID, count, name, quality, link, mapID) end
+  recordInto(sessionOf(key), zone, sub, itemID, count, name, quality, link, mapID)
+  return true
+end
+
+function ns.RecordCatch(itemID, count, name, quality, link)
+  recordCatchNoRefresh(itemID, count, name, quality, link)
   ns.FireRefresh()
 end
 
 -- Read every item slot of a fishing loot window into the tracker and, when the autoLoot
 -- setting is on, grab the loot too. Gated to fishing so mob / chest / herb loot is never
--- read or looted. We iterate in REVERSE because LootSlot() re-indexes the loot list (a
--- forward loop would skip slots), and we read each slot's info BEFORE looting it (a looted
--- slot's link/info clears). Looting is an insecure-callable action here -- the bobber click
--- is the player's hardware event -- so no secure button is needed.
-local function handleLootOpened()
-  if not (ns.fishingActive or (ns.lastFishing and GetTime() - ns.lastFishing <= 1.0)) then
+-- read or looted.
+--
+-- Runs at LOOT_READY first -- it fires BEFORE the loot window shows, ahead of external
+-- fast-loot addons (which loot at LOOT_READY and can finish before LOOT_OPENED ever
+-- fires) -- with LOOT_OPENED as the fallback. A once-per-window flag (cleared at
+-- LOOT_CLOSED, and on the next fishing cast in case LOOT_CLOSED was ever missed) makes
+-- the two registrations process each window exactly once. The flag is NOT set when the
+-- fishing gate fails, so the fallback event can still record if the gate turns true.
+--
+-- We iterate in REVERSE because LootSlot() re-indexes the loot list (a forward loop would
+-- skip slots), and we read each slot's info BEFORE looting it (a looted slot's link/info
+-- clears). When the client itself is auto-looting (the event's autoLoot payload), we
+-- record but skip our own LootSlot pass -- the client is already grabbing every slot.
+-- All slots are recorded refresh-free, then ONE refresh repaints the UI.
+--
+-- Looting is an insecure-callable action here -- the bobber click is the player's
+-- hardware event -- so no secure button is needed.
+local lootProcessed = false
+
+local function processLoot(nativeAutoLoot)
+  if lootProcessed then return end
+  -- IsFishingLoot() is the primary gate where available; the channel-state heuristic
+  -- stays as a fallback (and covers loot arriving within ~1s of the channel ending).
+  if not ((IsFishingLoot and IsFishingLoot())
+      or ns.fishingActive
+      or (ns.lastFishing and GetTime() - ns.lastFishing <= 1.0)) then
     return
   end
+  lootProcessed = true
   local s = ns.GetSettings and ns.GetSettings()
-  local autoLoot = (not s) or s.autoLoot ~= false  -- default-on; nil settings => default behavior
+  -- autoLoot default-on; nil settings => default behavior. Skip our pass when the client
+  -- is natively auto-looting, so the slots aren't requested twice.
+  local doLoot = ((not s) or s.autoLoot ~= false) and not nativeAutoLoot
   local n = GetNumLootItems and GetNumLootItems() or 0
+  local recorded = 0
   for i = n, 1, -1 do
     local link = GetLootSlotLink(i)  -- nil for money slots
     if link then
       local _, name, quantity, _, quality = GetLootSlotInfo(i)
       local itemID = GetItemInfoInstant(link)  -- nil for currency -> not tracked
-      if itemID then
-        ns.RecordCatch(itemID, quantity or 1, name, quality, link)
+      if itemID and recordCatchNoRefresh(itemID, quantity or 1, name, quality, link) then
+        recorded = recorded + 1
       end
     end
-    if autoLoot then LootSlot(i) end  -- grabs item, money, and currency slots alike
+    if doLoot then LootSlot(i) end  -- grabs item, money, and currency slots alike
   end
+  if recorded > 0 then ns.FireRefresh() end
 end
 
 -- ---------------------------------------------------------------------------
@@ -568,15 +617,27 @@ f:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
 f:RegisterEvent("UNIT_SPELLCAST_CHANNEL_STOP")
 f:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")  -- dev diagnostic (/ft castdebug) only
 f:RegisterEvent("UNIT_SPELLCAST_FAILED")     -- dev diagnostic (/ft castdebug) only
-f:RegisterEvent("LOOT_OPENED")
+f:RegisterEvent("LOOT_READY")   -- primary catch signal: fires before the window shows
+f:RegisterEvent("LOOT_OPENED")  -- fallback if LOOT_READY didn't fire for this window
+f:RegisterEvent("LOOT_CLOSED")  -- clears the once-per-window guard
 f:SetScript("OnEvent", function(_, event, arg1, _, arg3)  -- arg3 = spellID (spellcast events)
   if event == "ADDON_LOADED" then
     if arg1 == addonName then
-      FishTipsDB = FishTipsDB or {}
+      FishTipsDB = FishTipsDB or {}  -- only writes the global when nil (a fresh install can't be a downgrade)
       local db = FishTipsDB
-      migrate(db)
-      db.chars = db.chars or {}
-      db.addonVersion = C_AddOns and C_AddOns.GetAddOnMetadata(addonName, "Version") or nil
+      if type(db.version) == "number" and db.version > DB_VERSION then
+        -- SavedVariables written by a NEWER addon version. Reading -- and above all
+        -- re-saving -- a schema this build doesn't understand could corrupt real catch
+        -- history, so the persisted table is left completely untouched (zero writes; it
+        -- re-serializes as-is at logout) and this session runs on a throwaway in-memory
+        -- store: tracking and settings work, but none of it persists.
+        print("|cffffd36eFish & Tips|r: " .. (ns.L["your saved data is from a newer version (v%d; this build reads v%d). Running without saving -- catches and settings from this session will NOT persist. Please update the addon."]):format(db.version, DB_VERSION))
+        db = { version = DB_VERSION, chars = {} }
+      else
+        migrate(db)
+        db.chars = db.chars or {}
+        db.addonVersion = C_AddOns and C_AddOns.GetAddOnMetadata(addonName, "Version") or nil
+      end
       ns.db = db
       if ns.InitSettings then ns.InitSettings(db) end
     end
@@ -592,6 +653,7 @@ f:SetScript("OnEvent", function(_, event, arg1, _, arg3)  -- arg3 = spellID (spe
       if isFishingSpell(arg3) then  -- arg3 = spellID
         ns.fishingActive = true
         ns.lastFishing = GetTime()
+        lootProcessed = false  -- a new cast: any previous loot window is over, even if LOOT_CLOSED was missed
         ns.RecordCast()
         ns.FireFishingStart()
       end
@@ -606,8 +668,10 @@ f:SetScript("OnEvent", function(_, event, arg1, _, arg3)  -- arg3 = spellID (spe
       print(("|cffffd36eFish & Tips|r: %s id=%s name=%s"):format(
         event, tostring(arg3), tostring(spellNameByID(arg3))))
     end
-  elseif event == "LOOT_OPENED" then
-    handleLootOpened()
+  elseif event == "LOOT_READY" or event == "LOOT_OPENED" then
+    processLoot(arg1)  -- arg1 = the client's native-autoloot flag for both events
+  elseif event == "LOOT_CLOSED" then
+    lootProcessed = false
   else
     ns.FireRefresh()
   end

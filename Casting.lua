@@ -16,7 +16,7 @@ ns.Casting = ns.Casting or {}
 
 -- Bindings.xml binding label. Its body re-applies the keybind override (self-heal). _G[...] so
 -- luacheck ignores these global writes.
-_G.BINDING_NAME_FISHTIPSCAST = "Cast Fishing"
+_G.BINDING_NAME_FISHTIPSCAST = ns.L["Cast Fishing"]
 
 local DOUBLE_MIN = 0.04  -- ignore right-clicks closer together than this (debounce)
 
@@ -36,18 +36,11 @@ end
 local function keyEnabled() local m = mode(); return m == "key" or m == "both" end
 local function doubleEnabled() local m = mode(); return m == "doubleclick" or m == "both" end
 
--- The localized Fishing name -- 7620 ("Fishing") exists on every version; 131474 is the retail
--- fallback. SetOverrideBindingSpell casts by this name, like `/cast Fishing`.
+-- The localized Fishing name comes from the single resolver in Core.lua
+-- (ns.FishingSpellName -- shared with catch detection, memoized on success only).
+-- SetOverrideBindingSpell casts by this name, like `/cast Fishing`.
 local function fishingName()
-  if C_Spell and C_Spell.GetSpellName then
-    local n = C_Spell.GetSpellName(7620) or C_Spell.GetSpellName(131474)
-    if n then return n end
-  end
-  if GetSpellInfo then
-    local n = GetSpellInfo(7620) or GetSpellInfo(131474)
-    if n then return n end
-  end
-  return "Fishing"
+  return ns.FishingSpellName()
 end
 
 -- ---------------------------------------------------------------------------

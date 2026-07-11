@@ -11,11 +11,13 @@ doc — if you're about to change behavior, check here first.
 > **Build state:** the presentation layer (the stats window, settings, minimap, slash
 > commands) is implemented and reads through the `ns.Get*` seams. Now wired:
 > the **double-right-click cast**, **cast counting**, **loot-driven catch recording**
-> (gated to fishing, keyed by itemID), **auto-opening the window when fishing starts**,
-> **fishing-only auto-loot** — the loot reader now calls `LootSlot()` to grab the catch (gated
-> by the `autoLoot` setting, default on) — and an **Auctionator price overlay** (session gold
-> values, on by default but only rendering when Auctionator is installed). Still roadmap: **junk
-> auto-discard** (auto-selling or throwing back gray catches — see Deferred/roadmap).
+> (LOOT_READY-first, once per window, gated to fishing, keyed by itemID), **auto-opening
+> the window when fishing starts**, **fishing-only auto-loot** — the loot reader calls
+> `LootSlot()` to grab the catch (gated by the `autoLoot` setting, default on) — and an
+> **Auctionator price overlay** (session gold values, on by default but only rendering when
+> Auctionator is installed). A **LuaJIT test harness** (`tests/`, run in CI) asserts the
+> data-layer invariants out of game. Still roadmap: **junk auto-discard** (auto-selling or
+> throwing back gray catches — see Deferred/roadmap).
 
 ## Why this addon exists
 
@@ -89,18 +91,29 @@ back on restores the history. The filter is **display-time only**: it lives in t
 `quality == 0` (already stored per catch); items with no recorded quality count as non-junk.
 
 ### 3. Fishing-only auto-loot — the *same* mechanism as tracking
-This is the key design insight. When a loot window opens **during fishing**, Fish & Tips
-reads every slot (recording each catch into the tracker) and then loots all of it — one
-`LOOT_OPENED` handler walking the slots **in reverse** (looting re-indexes the list) and
-calling `LootSlot()` on each. Because **we are the one doing the looting, the recorded counts
-are exact** — this sidesteps a classic catch-tracker bug, where a separate "fast loot" addon
-grabbed the fish before it could be counted. Non-fishing loot (mobs, chests, herbs) is never
-touched: auto-loot is gated to a short window after a successful Fishing cast.
+This is the key design insight. When fishing loot becomes available, Fish & Tips reads
+every slot (recording each catch into the tracker) and then loots all of it — one handler
+walking the slots **in reverse** (looting re-indexes the list) and calling `LootSlot()` on
+each. The handler runs at **`LOOT_READY`** — which fires *before* the loot window shows,
+ahead of external fast-loot addons (they can finish looting before `LOOT_OPENED` ever
+fires) — with `LOOT_OPENED` as the fallback, and a **once-per-window guard** (cleared at
+`LOOT_CLOSED`, and on the next cast as a backstop) so the two events never double-count a
+window. Because we read at the earliest addon-visible moment and do the looting ourselves,
+**the recorded counts stay exact whenever Fish & Tips or the game's own auto-loot grabs the
+catch** — sidestepping the classic catch-tracker bug where a separate "fast loot" addon
+grabbed the fish before it could be counted. (Against a third-party fast-looter racing the
+same `LOOT_READY` event, recording is best-effort — that event is the earliest point any
+addon can act.) When the game's **native auto-loot** is doing the looting (the loot events
+carry that flag), Fish & Tips records but skips its own `LootSlot()` pass — the client is
+already grabbing every slot. Non-fishing loot (mobs, chests, herbs) is never touched: the
+gate is `IsFishingLoot()`, with a short-window-after-cast heuristic as fallback.
 
 Auto-loot is gated by the **`autoLoot` setting** (default on), read live on each catch.
-Tracking does not *require* it — with `autoLoot` off, Fish & Tips still reads the loot slots
-at `LOOT_OPENED` to record the catch (best-effort, accepting that an external fast-loot addon
-may win the race in that mode).
+Tracking does not *require* it — with `autoLoot` off, Fish & Tips still reads the loot
+slots to record the catch without looting anything.
+
+A whole window is recorded in one pass and the UI repaints **once** per window, not once
+per fish.
 
 ### 4. Auctionator price overlay — for people who fish to sell
 A **display-only** overlay (`auctionatorPrices` setting, **on by default** — but it only ever
@@ -136,7 +149,15 @@ notes.)
 ```
 ### FishTips.toc
 Manifest. `## Title: Fish & Tips`, `## SavedVariables: FishTipsDB`.
-Loads Core.lua, Casting.lua, UI.lua, Settings.lua (order matters).
+Loads Locale.lua, Core.lua, Casting.lua, UI.lua, Settings.lua (order matters).
+
+### Locale.lua
+Localization scaffold, loaded FIRST so every file can reference it. `ns.L` maps English
+keys -> translated strings with an identity fallback (a missing key returns itself), so
+English needs no table and a missing translation can never break a render. User-facing
+strings go through `ns.L["..."]`; format strings are wrapped whole (`ns.L["+%d more"]`)
+so translations can reorder words. Excluded on purpose: the "Fish & Tips" brand, slash
+tokens and token-list help, dev-only output (/ft demo, /ft castdebug), texture paths.
 
 ### Core.lua
 Data layer: SavedVariables DB + fishing-state detection + loot read/auto-loot +
@@ -186,6 +207,16 @@ reset, a location header, per-location catch list, top-zones chart, footer stat 
 button, and a small **theme engine** — a registry of palettes + body layouts applied by
 `ApplyTheme`. The theme engine is currently **locked to a single look** (no chooser is
 exposed) but kept in code for future customizable themes. Reads only via `ns.*` seams.
+
+Render model: WoW never garbage-collects Frames/Textures/FontStrings, so the themed body
+is drawn from small **manual widget pools** (re-parented on acquire) — a rebuild releases
+and re-acquires the same widgets instead of destroying anything. Refreshes are
+**coalesced**: data events schedule one flush on the next frame (`C_Timer.After(0)`),
+visibility is decided at flush time, and only the **visible surface** repaints — with just
+the compact strip up, the hidden window is skipped and simply repaints on show (every show
+path calls `UI.Refresh`). The zone chart's data walk is skipped in views that don't
+render it. The window chrome (title bar, controls, dropdown, compact strip, minimap
+button) is built once and never rebuilt.
 
 ### Settings.lua
 Settings layer: defaults/sanitizing for `db.settings`, the options panel, the slash
@@ -239,7 +270,8 @@ The tracking write-path (see the WoW API notes) feeds the same store these seams
 
 - `ns.RecordCast()` — increment the cast counter (lifetime + session) for the current char.
 - `ns.RecordCatch(itemID, count, name, quality, link)` — record one fished item, keyed by
-  itemID, tagged with the current real zone/subzone, into both lifetime and session.
+  itemID, tagged with the current real zone/subzone (and their raw mapID — see *DB
+  schema*), into both lifetime and session.
 - `ns.ResetSession()` — drop the current character's in-memory session store and restart the
   elapsed clock (the Session "New session" button). The persisted lifetime history is never
   touched; fires a refresh.
@@ -247,10 +279,13 @@ The tracking write-path (see the WoW API notes) feeds the same store these seams
   `RegisterRefresh`/`FireRefresh`) the UI subscribes to so it can **auto-open** the window
   when fishing begins. `FireRefresh` only repaints an already-open window; this can show it.
 
-The loot reader does both jobs from one `LOOT_OPENED` handler (gated to fishing): it reads
-each item slot and calls `ns.RecordCatch`, and — when the `autoLoot` setting is on — calls
-`LootSlot()` to grab the catch. It walks the slots **in reverse** and reads each slot's info
-**before** looting it (a looted slot re-indexes the list and clears its link/info).
+The loot reader does both jobs from one handler registered for `LOOT_READY` **and**
+`LOOT_OPENED` (whichever fires first wins, via a per-window guard cleared at `LOOT_CLOSED`;
+gated to fishing): it reads each item slot into the store, and — when the `autoLoot`
+setting is on and the client isn't already native-auto-looting — calls `LootSlot()` to
+grab the catch. It walks the slots **in reverse** and reads each slot's info **before**
+looting it (a looted slot re-indexes the list and clears its link/info), then fires ONE
+refresh for the whole window (not one per item).
 
 ## DB schema
 
@@ -262,13 +297,16 @@ FishTipsDB = {
   chars = {
     ["Name-NormalizedRealm"] = {
       lifetime = {
-        casts = <n>,
+        casts = <n>,                    -- cast counter lives at the bucket root only
         zones = {
-          [zoneName] = {
+          [zoneName] = {                -- zoneName = localized GetRealZoneText()
+            mapID = <uiMapID>,          -- raw GetBestMapForUnit at catch time (additive)
             subs = {
-              [subZoneName] = {
-                casts = <n>,
-                items = { [itemID] = { count = <n>, link = <hyperlink> } },
+              [subZoneName] = {         -- subZoneName = localized GetSubZoneText()
+                mapID = <uiMapID>,      -- raw GetBestMapForUnit at catch time (additive)
+                items = {
+                  [itemID] = { count = <n>, name = <string>, quality = <n>, link = <hyperlink> },
+                },
               },
             },
           },
@@ -284,8 +322,21 @@ FishTipsDB = {
   by a rendering path.
 - **Lifetime** counts persist; **session** counts live in memory only and reset on
   login/`/reload`.
-- A representative `link` is stored per item so the name/quality icon can be resolved
-  lazily at display time without re-scanning.
+- `name`/`quality`/`link` are stored with the first record of an item (and backfilled if an
+  earlier record lacked them) so display never has to re-scan; if a name is still missing
+  at render time, it is parsed from the stored `link`.
+- **`mapID` (zone + sub buckets, additive — no `DB_VERSION` bump, no reader consumes it
+  yet):** the raw `C_Map.GetBestMapForUnit("player")` at catch time — possibly a
+  micro/floor map (caves and city districts have their own uiMapIDs), deliberately NOT
+  normalized at write time. Never overwritten with nil (a loading-screen lookup failure
+  must not erase a good id). It exists so a future migration can re-key zones
+  **locale-safely**: re-key by parent-normalized mapID (walking `C_Map.GetMapInfo` up to a
+  Zone-type map), derive zone display names live via `C_Map.GetMapInfo(mapID).name` (which
+  returns the *current locale's* name), and fall back to a name scan for records that
+  predate the field. Subzones stay keyed by localized string — subzones have no stable ID.
+  Until that migration, zones remain keyed by localized `GetRealZoneText()` strings and
+  every read seam is name-based (a deliberate decision: grouping reads by raw mapID would
+  wrongly split zones whose subzones sit on different micro-maps).
 - Character key: `UnitName("player") .. "-" .. GetNormalizedRealmName()`, resolved lazily
   at first use (PEW-safe; the normalized realm isn't reliable at `ADDON_LOADED`). Alt
   display names strip the realm; the DB key keeps it (so same-named alts across realms
@@ -303,6 +354,14 @@ someone caught in a zone last month. So:
 - Additive changes (a new optional field, a new setting) don't bump the version: readers
   tolerate `nil` and `ns.InitSettings` default-fills/sanitizes the settings table (using
   `== nil` checks, never falsy, so a persisted `false` survives).
+- **Downgrade guard:** if the stored `db.version` is *newer* than the build's `DB_VERSION`
+  (a newer addon version wrote it, then the player rolled back), the addon leaves the
+  persisted table **completely untouched** — zero writes, so it re-serializes as-is at
+  logout — warns once in chat, and runs the session on a throwaway in-memory store:
+  tracking works and settings are usable (at their defaults — the newer-schema saved
+  settings are deliberately left unread), but nothing from that session persists. This
+  prevents a rollback from silently re-saving (and corrupting) a schema it doesn't
+  understand.
 - `addonVersion` (the TOC version string, restamped every load) is a write-only
   diagnostic for bug-report SavedVariables; it never drives logic.
 
@@ -317,34 +376,49 @@ awaiting in-game confirmation are flagged inline.
   the Fishing spell. A real fishing cast fires **two** spells: **`131476`** (the one the player
   casts) which triggers **`131474`** (the channel) — confirmed in-game via two
   `UNIT_SPELLCAST_SUCCEEDED`. Detection matches **either id** *or* the shared **name** "Fishing"
-  (so a pole-override variant still registers); the name is resolved via
-  `C_Spell.GetSpellInfo(131476)`. `CHANNEL_START` sets `ns.fishingActive`
+  (so a pole-override variant still registers); the name comes from the single
+  `ns.FishingSpellName()` resolver (tries `C_Spell.GetSpellName` on 7620 → 131474 → 131476,
+  legacy `GetSpellInfo` as fallback, **memoizing only a successful lookup** — the
+  non-localized "Fishing" literal is returned per-call and never cached, so an early nil
+  lookup can't poison detection or the cast for the session; Casting.lua uses the same
+  resolver). `CHANNEL_START` sets `ns.fishingActive`
   + `ns.lastFishing`, counts a cast, and fires the auto-open notifier. A pole-equipped check
   (`GetInventoryItemID("player", 16)`) remains an optional secondary signal. Confirm the
   spellID and that the channel events fire in-game.
-- **Catch detection.** *Implemented.* On `LOOT_OPENED`, gated to fishing (`ns.fishingActive`
-  or a catch within ~1s of the last fishing channel, so mob/chest loot is never counted), the
-  reader walks `GetNumLootItems` and reads each slot with `GetLootSlotLink` (nil for
-  money/currency → not tracked) + `GetLootSlotInfo` (name, quantity, quality);
-  `GetItemInfoInstant(link)` gives the itemID. Each item is sent to `ns.RecordCatch`.
-- **Catch *auto-loot*.** *Implemented.* The same `LOOT_OPENED` handler, when the `autoLoot`
-  setting is on, calls `LootSlot(i)` on every slot (items, money, and currency alike) — looping
-  **in reverse** (`for i = n, 1, -1`) because looting a slot re-indexes the list, and reading
-  each slot's info **before** looting it. No secure button: `LootSlot()` is callable from the
-  insecure handler (the bobber click is the hardware event) — the standard insecure-`LOOT_OPENED`
-  fast-loot pattern on current retail. No `ConfirmLootSlot` auto-confirm
-  — fished loot isn't BoP, so the rare confirm dialog is left for the player. **Load-bearing
-  in-game check:** confirm `LootSlot()` from the handler loots fully, taint-free, on 12.0.7.
-  **Fallback if it's ever blocked:** toggle the `autoLootDefault` CVar on during the fishing
-  window and restore it after.
+- **Catch detection.** *Implemented.* One handler for **`LOOT_READY`** (fires *before* the
+  loot window shows — the earliest addon-visible point; external fast-looters act here and
+  can finish before `LOOT_OPENED` ever fires) and **`LOOT_OPENED`** (fallback), with a
+  **once-per-window guard** cleared at `LOOT_CLOSED` and on the next fishing cast (backstop
+  for a missed `LOOT_CLOSED`). The guard is set only when a window is actually processed —
+  a gate failure leaves it clear so the fallback event gets its own chance. Gated to
+  fishing by **`IsFishingLoot()`** OR the heuristic (`ns.fishingActive` or loot within ~1s
+  of the last fishing channel), so mob/chest loot is never counted. The reader walks
+  `GetNumLootItems` and reads each slot with `GetLootSlotLink` (nil for money → not
+  tracked) + `GetLootSlotInfo` (name, quantity, quality); `GetItemInfoInstant(link)` gives
+  the itemID (nil for currency → not tracked). All slots are recorded in one pass, then
+  **one** `FireRefresh` repaints the UI. (`IsFishingLoot()` behavior on 12.0.x fishing
+  loot awaits the in-game pass; the heuristic keeps working regardless.)
+- **Catch *auto-loot*.** *Implemented.* The same handler, when the `autoLoot` setting is on
+  **and the client isn't already native-auto-looting** (both loot events carry the client's
+  `autoLoot` flag as their first payload — when it's set, the client is grabbing every slot
+  itself and our pass would double-request), calls `LootSlot(i)` on every slot (items,
+  money, and currency alike) — looping **in reverse** (`for i = n, 1, -1`) because looting
+  a slot re-indexes the list, and reading each slot's info **before** looting it. No secure
+  button: `LootSlot()` is callable from the insecure loot-event handler (the bobber click
+  is the hardware event) — the standard insecure fast-loot pattern on current retail. No
+  `ConfirmLootSlot` auto-confirm — fished loot isn't BoP, so the rare confirm dialog is
+  left for the player. **Load-bearing in-game check:** confirm `LootSlot()` from the
+  handler loots fully, taint-free, on 12.0.7. **Fallback if it's ever blocked:** toggle the
+  `autoLootDefault` CVar on during the fishing window and restore it after.
 - **The cast is a secure *binding* (by name), not a button.** *Implemented (no world overlay, no
   action button).* For the Fishing profession spell on 12.0, a secure button silently no-ops no
   matter how it's configured — `type="spell"` (→ `CastSpellByID(131474/131476)` and
   `CastSpellByName("Fishing")`) and `type="macro"` (→ `macrotext="/cast Fishing"`) **all failed
   in-game**, while a plain `/cast Fishing` macro works. So the cast goes through the **secure
   binding system, by name**: `SetOverrideBindingSpell(owner, true, key, <localized name>)`, which
-  resolves the spell like `/cast`. The localized name comes from `C_Spell.GetSpellName(7620)` (→
-  131474 fallback). Two override owners: a **persistent** one for the keybind (the player's "Cast
+  resolves the spell like `/cast`. The localized name comes from the shared
+  `ns.FishingSpellName()` resolver in Core.lua (7620 → 131474 → 131476; success-only
+  memoization — see *Fishing state detection*). Two override owners: a **persistent** one for the keybind (the player's "Cast
   Fishing" key, re-applied OOC) and a **transient** one for the double-click (`"BUTTON2"`, armed on
   the second of two quick right-downs, cleared by a short `C_Timer`). The double-click is detected
   via the **`GLOBAL_MOUSE_DOWN` event** — **not `WorldFrame:HookScript`, which taints the cast so it
@@ -366,7 +440,8 @@ awaiting in-game confirmation are flagged inline.
   trigger path(s); `castDelay` (default 0.3s) is the double-click window. Both are account-wide
   settings (no `DB_VERSION` bump); the panel exposes a dropdown + slider.
 - **Zone resolution.** `GetRealZoneText()` / `GetSubZoneText()` for names, plus
-  `C_Map.GetBestMapForUnit("player")` for a stable mapID. **Log by the loot event, not by
+  `C_Map.GetBestMapForUnit("player")` for a stable mapID — stamped on the zone and sub
+  buckets at write time (see *DB schema*). **Log by the loot event, not by
   pool detection:** Midnight's Voidstorm "Oceanic Vortex" pools resist auto-detection but
   still produce loot, so tag the catch with whatever zone/subzone is readable rather than
   dropping it.

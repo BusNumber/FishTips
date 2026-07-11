@@ -20,6 +20,7 @@ read_globals = {
   "GetRealZoneText", "GetSubZoneText", "UnitName", "GetNormalizedRealmName",
   "C_Map", "C_AddOns", "C_Spell", "GetSpellInfo",
   "GetNumLootItems", "GetLootSlotLink", "GetLootSlotInfo", "GetItemInfoInstant", "LootSlot",
+  "IsFishingLoot",
   "ITEM_QUALITY_COLORS", "STANDARD_TEXT_FONT", "UNKNOWN",
   "Settings", "GameTooltip", "StaticPopup_Show", "YES", "NO",
   "CreateSettingsListSectionHeaderInitializer", "MinimalSliderWithSteppersMixin",

@@ -43,15 +43,37 @@ Code conventions: the Lua files share the private addon table via the
 `local addonName, ns = ...` vararg. Keep the data/presentation split — new data sources
 and game-state logic go in `Core.lua` behind the `ns.Get*` seams; `UI.lua` reads only
 through those seams. Secure-frame code stays isolated in `Casting.lua` to contain taint.
+User-facing strings go through **`ns.L["..."]`** (defined in `Locale.lua`, first in the
+TOC) — the English string is the key, and format strings are wrapped whole
+(`ns.L["+%d more"]`) so translations can reorder words. Slash tokens, dev-only output,
+texture paths, and the "Fish & Tips" brand stay as plain literals.
 
-## Static checks
+## Static checks & automated tests
 
 WoW globals (`C_Container`, `Enum`, `C_Map`, `SecureActionButtonTemplate`, …) don't exist
-outside the game, so only syntax-level checks are meaningful locally:
+outside the game, so local checks are syntax, lint, and the stubbed data-layer tests:
 
 - `luac -p <file>` — syntax-only compile pass (or `luajit -bl <file> /dev/null`;
   LuaJIT speaks Lua 5.1, the same dialect as WoW, while modern `luac` is 5.4).
 - `luacheck .` — uses the repo's `.luacheckrc` (which knows the WoW globals).
+- `luajit tests/run_tests.lua` — runs the data-layer test suite.
+
+### Automated tests (`tests/`)
+
+The suite loads the **real** `Locale.lua` + `Core.lua` + `Settings.lua` against minimal
+WoW API stubs (`tests/wow_stubs.lua` — a mock event frame, a loot-window model, clock,
+zone/identity/spell knobs) and drives actual game events (`ADDON_LOADED`, the fishing
+channel events, `LOOT_READY`/`LOOT_OPENED`/`LOOT_CLOSED`) through the addon's own
+handlers. It asserts the design invariants: account rollup = Σ characters, cross-realm
+same-name characters stay distinct, the junk filter is consistent across every seam, each
+loot window is recorded exactly once (with one UI refresh), the fishing gate, mapID
+stamping, and the version-downgrade guard.
+
+`UI.lua` and `Casting.lua` are deliberately **not** loaded — rendering and secure-binding
+behavior can't be meaningfully stubbed; those claims belong on the in-game checklist
+below. When adding data-layer behavior, add a test; when a claim needs the real client,
+add a checklist item instead. CI (GitHub Actions) runs luacheck, a syntax pass over every
+Lua file, and this suite on each push/PR.
 
 ## In-game verification
 
@@ -75,11 +97,17 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
 ### Auto-loot + tracking (the core feature)
 
 - [ ] Click a fished bobber → the loot window auto-loots fully, and every item is recorded
-      under the **correct zone + subzone**.
-- [ ] Killing a mob / opening a chest does **not** trigger the fishing auto-loot.
+      under the **correct zone + subzone** — exactly once (no double-count across
+      consecutive catches; the once-per-window guard resets between windows).
+- [ ] Killing a mob / opening a chest does **not** trigger the fishing auto-loot — including
+      loot opened moments after a fishing channel ends (`IsFishingLoot()` + heuristic gate).
 - [ ] Counts stay **exact** even with a separate fast-loot/auto-loot addon enabled — no
       double-count, no missed catches.
-- [ ] With auto-loot turned off in settings, catches are still tracked (best-effort).
+- [ ] With the game's **native auto-loot** on (the Blizzard setting/CVar), a catch is
+      recorded exactly once and looted exactly once (Fish & Tips records but leaves the
+      looting to the client — no double-loot requests or errors).
+- [ ] With auto-loot turned off in settings, catches are still tracked, and nothing is looted
+      by the addon.
 - [ ] If the CVar fallback is in use, the player's prior `autoLootDefault` is restored
       after fishing across `/reload`, logout, and a disconnect.
 

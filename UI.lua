@@ -4,12 +4,13 @@ local _, ns = ...
 -- One window with shared chrome (drag/scope/mode/close/collapse) and a themed body that
 -- is rebuilt on theme change. Three themes share two body layouts: "classic" (inline hero
 -- + footer) and "tiles" (location header + per-location list + top-zones chart + footer stat
--- bar, used by modern + blend). Item
--- rows render two ways (quality-colored name, or neutral + rarity bar) per the itemStyle
--- setting. A compact strip and a custom minimap button round out the surface.
+-- bar, used by modern + blend). Item rows show the quality-colored name over a thin
+-- frequency bar. A compact strip and a custom minimap button round out the surface.
 
 local UI = {}
 ns.UI = UI
+
+local L = ns.L  -- user-facing strings go through the locale table (English keys)
 
 local WIN_W = 340
 local PAD = 12
@@ -83,13 +84,91 @@ local function recolorBorder(edges, c)
   for i = 1, #edges do setTex(edges[i], c) end
 end
 
+-- ---------------------------------------------------------------------------
+-- Widget pools for the themed body. WoW never garbage-collects Frames / Textures /
+-- FontStrings, so the old destroy-and-recreate body (Hide + SetParent(nil)) leaked
+-- every widget it ever made. The body content is now drawn from these pools:
+-- RebuildBody releases everything, the builders re-acquire, and a whole fishing
+-- session reuses the same few dozen widgets.
+--
+-- Manual pools rather than Blizzard's CreateFramePool: that fixes the parent at pool
+-- construction, but body widgets re-parent every pass (a texture can sit on the body
+-- one build and inside a row the next), so acquire re-parents instead.
+-- ---------------------------------------------------------------------------
+local function newPool(create)
+  local free, active = {}, {}
+  return {
+    Acquire = function(parent)
+      local w = table.remove(free) or create()
+      w:SetParent(parent)
+      w:Show()
+      active[#active + 1] = w
+      return w
+    end,
+    ReleaseAll = function()
+      for i = #active, 1, -1 do
+        local w = active[i]
+        w:Hide()
+        w:ClearAllPoints()
+        free[#free + 1] = w
+        active[i] = nil
+      end
+    end,
+  }
+end
+
+local framePool = newPool(function() return CreateFrame("Frame", nil, UIParent) end)
+local texPool   = newPool(function() return UIParent:CreateTexture(nil, "BACKGROUND") end)
+local fsPool    = newPool(function() return UIParent:CreateFontString(nil, "OVERLAY") end)
+
+local function releaseBodyWidgets()
+  framePool.ReleaseAll(); texPool.ReleaseAll(); fsPool.ReleaseAll()
+end
+
+-- Pooled acquire wrappers mirroring CreateFrame / MakeTex / MakeFS / MakeBorder for the
+-- body builders. Every acquire re-sets the state a previous use could have left behind:
+-- draw layer + color for textures; font, color, JustifyH and auto-sizing for
+-- fontstrings. The SetSize(0, 0) reset is load-bearing -- it restores auto-sizing after
+-- a width-constrained use (the zone chart's SetWidth would otherwise leak into a later
+-- auto-sized label).
+local function bodyFrame(parent)
+  return framePool.Acquire(parent)
+end
+
+local function bodyTex(parent, c, layer)
+  local t = texPool.Acquire(parent)
+  t:SetDrawLayer(layer or "BACKGROUND")
+  setTex(t, c)
+  return t
+end
+
+local function bodyFS(parent, size, color, flags)
+  local fs = fsPool.Acquire(parent)
+  fs:SetSize(0, 0)
+  fs:SetJustifyH("LEFT")
+  fs:SetFont(STANDARD_TEXT_FONT, size, flags or "")
+  local c = color or { 1, 1, 1 }
+  fs:SetTextColor(c[1], c[2], c[3], c[4] or 1)
+  return fs
+end
+
+local function bodyBorder(frame, c)
+  local edges = {}
+  for i = 1, 4 do edges[i] = bodyTex(frame, c, "BORDER") end
+  edges[1]:SetPoint("TOPLEFT"); edges[1]:SetPoint("TOPRIGHT"); edges[1]:SetHeight(1)
+  edges[2]:SetPoint("BOTTOMLEFT"); edges[2]:SetPoint("BOTTOMRIGHT"); edges[2]:SetHeight(1)
+  edges[3]:SetPoint("TOPLEFT"); edges[3]:SetPoint("BOTTOMLEFT"); edges[3]:SetWidth(1)
+  edges[4]:SetPoint("TOPRIGHT"); edges[4]:SetPoint("BOTTOMRIGHT"); edges[4]:SetWidth(1)
+  return edges
+end
+
 local function qcolor(q)
   local c = ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[q or 1]
   if c then return c.r, c.g, c.b end
   return 1, 1, 1
 end
 
-local function catchWord(n) return n == 1 and "catch" or "catches" end
+local function catchWord(n) return n == 1 and L["catch"] or L["catches"] end
 
 local function fmtNum(n)
   n = n or 0
@@ -124,18 +203,19 @@ end
 -- Confirmation for the "New session" button -- guards against an accidental session wipe.
 -- The lifetime history is untouched; only the in-memory session counts/timer reset.
 StaticPopupDialogs["FISHTIPS_RESET_SESSION"] = {
-  text = "Start a new session? This clears the current session's catches and timer. Your lifetime history is kept.",
+  text = L["Start a new session? This clears the current session's catches and timer. Your lifetime history is kept."],
   button1 = YES,
   button2 = NO,
   OnAccept = function() if ns.ResetSession then ns.ResetSession() end end,
   timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
 }
 
+-- Body-only (pooled): called from the two body builders each rebuild.
 local function makeBadge(parent, p, text)
-  local b = CreateFrame("Frame", nil, parent)
-  local bg = MakeTex(b, { p.accent[1], p.accent[2], p.accent[3], 0.18 }, "BACKGROUND")
+  local b = bodyFrame(parent)
+  local bg = bodyTex(b, { p.accent[1], p.accent[2], p.accent[3], 0.18 }, "BACKGROUND")
   bg:SetAllPoints()
-  local fs = MakeFS(b, 10, p.accentText or p.accent)
+  local fs = bodyFS(b, 10, p.accentText or p.accent)
   fs:SetPoint("CENTER")
   fs:SetText(text)
   b:SetSize(fs:GetStringWidth() + 14, 15)
@@ -179,6 +259,12 @@ function UI.CreateDropdown(parent, width)
         r.fs = MakeFS(r, 12, { 0.88, 0.88, 0.9 }); r.fs:SetPoint("LEFT", 8, 0)
         r:SetScript("OnEnter", function(s) s.hl:Show() end)
         r:SetScript("OnLeave", function(s) s.hl:Hide() end)
+        -- One shared handler per row, installed once; SetItems only updates the row's
+        -- key/onSelect fields (no per-pass closure churn).
+        r:SetScript("OnClick", function(s)
+          menu:Hide()
+          if s.onSelect then s.onSelect(s.key) end
+        end)
         self.menu.rows[i] = r
       end
       r:SetSize(width, rowH)
@@ -189,11 +275,8 @@ function UI.CreateDropdown(parent, width)
       else
         r.fs:SetTextColor(0.88, 0.88, 0.9)
       end
-      local key = item.key
-      r:SetScript("OnClick", function()
-        menu:Hide()
-        if onSelect then onSelect(key) end
-      end)
+      r.key = item.key
+      r.onSelect = onSelect
       r:Show()
     end
     self.menu:SetSize(width, #list * rowH + 4)
@@ -228,12 +311,15 @@ local function gatherData()
   -- Session is always the current character; Lifetime follows the scope selector.
   local sessionScope = ns.GetSessionScope()
   local lifeScope = (mode == "session") and sessionScope or UI.scope
+  -- The top-zones chart renders only in the tiles layouts' Lifetime view; skip the
+  -- full zone walk everywhere else (session view, classic layout).
+  local wantZones = mode == "lifetime" and THEME_LAYOUT[UI.themeKey] ~= "classic"
   return {
     mode = mode, loc = loc,
     session = ns.GetTotals(sessionScope, "session"),
     lifetime = ns.GetTotals(lifeScope, "lifetime"),
     items = ns.GetLocationItems(lifeScope, mode, loc.zone, loc.subZone),
-    zones = ns.GetZoneTotals(lifeScope, "lifetime"),
+    zones = wantZones and ns.GetZoneTotals(lifeScope, "lifetime") or nil,
   }
 end
 
@@ -243,13 +329,13 @@ end
 -- No left swatch/stripe -- rarity is conveyed by the name color.
 -- ---------------------------------------------------------------------------
 local function renderRow(body, p, it, y, maxCount, total, priced)
-  local row = CreateFrame("Frame", nil, body)
+  local row = bodyFrame(body)
   row:SetPoint("TOPLEFT", PAD, y); row:SetSize(INNER, 28)
   local qr, qg, qb = qcolor(it.quality)
   -- Junk (quality 0) reads close to white at the default poor-gray; push it well dimmer so
   -- it visibly recedes from the worthwhile catches.
   if (it.quality or 1) == 0 then qr, qg, qb = 0.36, 0.36, 0.36 end
-  local name = MakeFS(row, 13, { qr, qg, qb })
+  local name = bodyFS(row, 13, { qr, qg, qb })
   name:SetPoint("TOPLEFT", 0, -1); name:SetPoint("RIGHT", -82, 0); name:SetJustifyH("LEFT")
   -- Optional Auctionator value of this catch (count * unit price), appended after the name.
   if priced then
@@ -259,16 +345,16 @@ local function renderRow(body, p, it, y, maxCount, total, priced)
     name:SetText(it.name)
   end
   local trackW = INNER - 90
-  local track = MakeTex(row, { 1, 1, 1, 0.07 }, "ARTWORK")
+  local track = bodyTex(row, { 1, 1, 1, 0.07 }, "ARTWORK")
   track:SetPoint("TOPLEFT", 0, -19); track:SetSize(trackW, 3)
   local frac = maxCount > 0 and (it.count / maxCount) or 0
-  local fill = MakeTex(row, { p.accent[1], p.accent[2], p.accent[3], 0.55 }, "OVERLAY")
+  local fill = bodyTex(row, { p.accent[1], p.accent[2], p.accent[3], 0.55 }, "OVERLAY")
   fill:SetPoint("TOPLEFT", track, "TOPLEFT"); fill:SetSize(math.max(2, trackW * frac), 3)
   -- count, then its share of the location's catches in gray parentheses
   local share = (total and total > 0) and math.floor(it.count / total * 100 + 0.5) or 0
-  local pct = MakeFS(row, 12, p.textSecondary)
+  local pct = bodyFS(row, 12, p.textSecondary)
   pct:SetPoint("RIGHT", -2, 0); pct:SetText("(" .. share .. "%)")
-  local cnt = MakeFS(row, 13, p.textPrimary)
+  local cnt = bodyFS(row, 13, p.textPrimary)
   cnt:SetPoint("RIGHT", pct, "LEFT", -4, 0); cnt:SetText(tostring(it.count))
   return y - 30
 end
@@ -276,8 +362,8 @@ end
 local function renderItems(body, p, data, y)
   local items = data.items
   if #items == 0 then
-    local none = MakeFS(body, 12, p.textSecondary)
-    none:SetPoint("TOPLEFT", PAD, y - 2); none:SetText("No catches here yet.")
+    local none = bodyFS(body, 12, p.textSecondary)
+    none:SetPoint("TOPLEFT", PAD, y - 2); none:SetText(L["No catches here yet."])
     return y - 24
   end
   -- Prices are session-only (lifetime price data would be stale) and opt-in.
@@ -290,9 +376,9 @@ local function renderItems(body, p, data, y)
     y = renderRow(body, p, items[i], y, maxCount, total, priced)
   end
   if #items > shown then
-    local more = MakeFS(body, 11, p.textSecondary)
+    local more = bodyFS(body, 11, p.textSecondary)
     more:SetPoint("TOPLEFT", PAD, y - 2)
-    more:SetText("+" .. (#items - shown) .. " more")
+    more:SetText((L["+%d more"]):format(#items - shown))
     y = y - 18
   end
   return y - 4
@@ -311,50 +397,50 @@ end
 local function BuildBody_Classic(body, p, data)
   local y = -8
 
-  local hero = CreateFrame("Frame", nil, body)
+  local hero = bodyFrame(body)
   hero:SetPoint("TOPLEFT", PAD, y); hero:SetSize(INNER, 58)
-  local heroBg = MakeTex(hero, { p.accent[1], p.accent[2], p.accent[3], 0.08 })
+  local heroBg = bodyTex(hero, { p.accent[1], p.accent[2], p.accent[3], 0.08 })
   heroBg:SetAllPoints()
-  local accentBar = MakeTex(hero, p.accent, "ARTWORK")
+  local accentBar = bodyTex(hero, p.accent, "ARTWORK")
   accentBar:SetPoint("TOPLEFT"); accentBar:SetPoint("BOTTOMLEFT"); accentBar:SetWidth(3)
-  local loc = MakeFS(hero, 13, p.textPrimary)
+  local loc = bodyFS(hero, 13, p.textPrimary)
   loc:SetPoint("TOPLEFT", 10, -8); loc:SetText(locText(data.loc))
   if data.loc.isSpecialPool then
-    local badge = makeBadge(hero, p, "Special pool")
+    local badge = makeBadge(hero, p, L["Special pool"])
     badge:SetPoint("TOPRIGHT", -8, -7)
   end
   local function stat(ax, value, label, color)
-    local v = MakeFS(hero, 16, color or p.textPrimary)
+    local v = bodyFS(hero, 16, color or p.textPrimary)
     v:SetPoint("TOPLEFT", ax, -26); v:SetText(value)
-    local l = MakeFS(hero, 11, p.textSecondary)
+    local l = bodyFS(hero, 11, p.textSecondary)
     l:SetPoint("TOPLEFT", ax, -44); l:SetText(label)
   end
   local totals = (data.mode == "session") and data.session or data.lifetime
   local rate = totals.ratePerHour and tostring(totals.ratePerHour) or "-"
-  stat(12, tostring(totals.catches), "catches")
-  stat(120, tostring(totals.casts), "casts")
-  stat(216, rate, "fish / hr", p.accent)
+  stat(12, tostring(totals.catches), L["catches"])
+  stat(120, tostring(totals.casts), L["casts"])
+  stat(216, rate, L["fish / hr"], p.accent)
   y = y - 58 - 10
 
-  local lbl = MakeFS(body, 11, p.textSecondary)
+  local lbl = bodyFS(body, 11, p.textSecondary)
   lbl:SetPoint("TOPLEFT", PAD, y)
-  lbl:SetText(data.mode == "session" and "Catches (this session)" or "Catches (lifetime)")
+  lbl:SetText(data.mode == "session" and L["Catches (this session)"] or L["Catches (lifetime)"])
   y = y - 18
 
   y = renderItems(body, p, data, y)
 
-  local footer = CreateFrame("Frame", nil, body)
+  local footer = bodyFrame(body)
   footer:SetPoint("TOPLEFT", PAD, y); footer:SetSize(INNER, 24)
-  local fbg = MakeTex(footer, { 1, 1, 1, 0.04 }); fbg:SetAllPoints()
+  local fbg = bodyTex(footer, { 1, 1, 1, 0.04 }); fbg:SetAllPoints()
   local mins = math.floor((data.session.elapsed or 0) / 60 + 0.5)
-  local ftext = string.format("%d casts    %d %s    %s/hr    %dm",
+  local ftext = string.format(L["%d casts    %d %s    %s/hr    %dm"],
     data.session.casts, data.session.catches, catchWord(data.session.catches),
     data.session.ratePerHour or 0, mins)
-  local ff = MakeFS(footer, 11, p.textSecondary)
+  local ff = bodyFS(footer, 11, p.textSecondary)
   ff:SetPoint("LEFT", 8, 0); ff:SetText(ftext)
   -- Right-aligned session value (whole session, all zones), when Auctionator pricing is on.
   if data.mode == "session" and ns.PricingActive and ns.PricingActive() then
-    local fg = MakeFS(footer, 11, p.textSecondary)
+    local fg = bodyFS(footer, 11, p.textSecondary)
     fg:SetPoint("RIGHT", -8, 0); fg:SetText(goldStr(ns.GetSessionValue()))
   end
   y = y - 24
@@ -367,79 +453,79 @@ local function BuildBody_Tiles(body, p, data)
 
   -- Location box. The catch counts live in the tiles-free body below + the footer stat bar,
   -- so this header carries just the current zone/subzone (no cast count -- it's in the footer).
-  local block = CreateFrame("Frame", nil, body)
+  local block = bodyFrame(body)
   block:SetPoint("TOPLEFT", PAD, y); block:SetSize(INNER, 32)
-  local bbg = MakeTex(block, { p.accent[1], p.accent[2], p.accent[3], 0.09 })
+  local bbg = bodyTex(block, { p.accent[1], p.accent[2], p.accent[3], 0.09 })
   bbg:SetAllPoints()
-  MakeBorder(block, { p.accent[1], p.accent[2], p.accent[3], 0.28 })
-  local loc = MakeFS(block, 13, p.textPrimary)
+  bodyBorder(block, { p.accent[1], p.accent[2], p.accent[3], 0.28 })
+  local loc = bodyFS(block, 13, p.textPrimary)
   loc:SetPoint("LEFT", 10, 0); loc:SetText(locText(data.loc))
   if data.loc.isSpecialPool then
-    local badge = makeBadge(block, p, "Special pool")
+    local badge = makeBadge(block, p, L["Special pool"])
     badge:SetPoint("RIGHT", -8, 0)
   end
   y = y - 32 - 10
 
-  local lbl = MakeFS(body, 11, p.textSecondary)
+  local lbl = bodyFS(body, 11, p.textSecondary)
   lbl:SetPoint("TOPLEFT", PAD, y)
-  lbl:SetText(data.mode == "session" and "Catches (this session)" or "Catches (lifetime)")
+  lbl:SetText(data.mode == "session" and L["Catches (this session)"] or L["Catches (lifetime)"])
   y = y - 18
 
   y = renderItems(body, p, data, y)
 
   -- Top-zones chart -- Lifetime view only. Current zone row highlighted in the accent.
   if data.mode == "lifetime" then
-    local divider = MakeTex(body, { 1, 1, 1, 0.06 }, "ARTWORK")
+    local divider = bodyTex(body, { 1, 1, 1, 0.06 }, "ARTWORK")
     divider:SetPoint("TOPLEFT", PAD, y); divider:SetSize(INNER, 1)
     y = y - 9
-    local zlbl = MakeFS(body, 11, p.textSecondary)
-    zlbl:SetPoint("TOPLEFT", PAD, y); zlbl:SetText("Top zones")
+    local zlbl = bodyFS(body, 11, p.textSecondary)
+    zlbl:SetPoint("TOPLEFT", PAD, y); zlbl:SetText(L["Top zones"])
     y = y - 18
 
-    local zones = data.zones
+    local zones = data.zones or {}  -- gatherData only walks zones when this chart renders
     local zmax = zones[1] and zones[1].catches or 1
     local zshown = math.min(#zones, 4)
     for i = 1, zshown do
       local z = zones[i]
       local current = (z.zone == data.loc.zone)
       local nameC = current and p.accent or p.textPrimary
-      local zn = MakeFS(body, 12, nameC)
+      local zn = bodyFS(body, 12, nameC)
       zn:SetPoint("TOPLEFT", PAD, y); zn:SetWidth(108); zn:SetJustifyH("LEFT")
       zn:SetText(z.zone)
-      local track = MakeTex(body, { 1, 1, 1, 0.06 }, "ARTWORK")
+      local track = bodyTex(body, { 1, 1, 1, 0.06 }, "ARTWORK")
       track:SetPoint("TOPLEFT", PAD + 116, y - 4); track:SetSize(INNER - 116 - 44, 7)
       local frac = zmax > 0 and (z.catches / zmax) or 0
       local fa = current and 1.0 or 0.7
-      local fill = MakeTex(body, { p.accent[1], p.accent[2], p.accent[3], fa }, "OVERLAY")
+      local fill = bodyTex(body, { p.accent[1], p.accent[2], p.accent[3], fa }, "OVERLAY")
       fill:SetPoint("TOPLEFT", track, "TOPLEFT")
       fill:SetSize(math.max(2, (INNER - 116 - 44) * frac), 7)
-      local zc = MakeFS(body, 12, p.textSecondary)
+      local zc = bodyFS(body, 12, p.textSecondary)
       zc:SetPoint("TOPRIGHT", body, "TOPLEFT", INNER + PAD, y); zc:SetJustifyH("RIGHT")
       zc:SetText(fmtNum(z.catches))
       y = y - 18
     end
     if zshown == 0 then
-      local none = MakeFS(body, 11, p.textSecondary)
-      none:SetPoint("TOPLEFT", PAD, y); none:SetText("No zones tracked yet.")
+      local none = bodyFS(body, 11, p.textSecondary)
+      none:SetPoint("TOPLEFT", PAD, y); none:SetText(L["No zones tracked yet."])
       y = y - 18
     end
   end
 
   -- Footer stat bar (session totals) -- placeholder strip for future stats.
   y = y - 4
-  local footer = CreateFrame("Frame", nil, body)
+  local footer = bodyFrame(body)
   footer:SetPoint("TOPLEFT", PAD, y); footer:SetSize(INNER, 24)
-  local fbg = MakeTex(footer, { 1, 1, 1, 0.04 }); fbg:SetAllPoints()
+  local fbg = bodyTex(footer, { 1, 1, 1, 0.04 }); fbg:SetAllPoints()
   local mins = math.floor((data.session.elapsed or 0) / 60 + 0.5)
   local casts = data.session.casts or 0
-  local ftext = string.format("%d %s    %d %s    %s/hr    %dm",
-    casts, casts == 1 and "cast" or "casts", data.session.catches,
+  local ftext = string.format(L["%d %s    %d %s    %s/hr    %dm"],
+    casts, casts == 1 and L["cast"] or L["casts"], data.session.catches,
     catchWord(data.session.catches), data.session.ratePerHour or 0, mins)
-  local ff = MakeFS(footer, 11, p.textSecondary)
+  local ff = bodyFS(footer, 11, p.textSecondary)
   ff:SetPoint("LEFT", 8, 0); ff:SetText(ftext)
   -- Right-aligned session value (whole session, all zones), when Auctionator pricing is on.
   if data.mode == "session" and ns.PricingActive and ns.PricingActive() then
-    local fg = MakeFS(footer, 11, p.textSecondary)
+    local fg = bodyFS(footer, 11, p.textSecondary)
     fg:SetPoint("RIGHT", -8, 0); fg:SetText(goldStr(ns.GetSessionValue()))
   end
   y = y - 24
@@ -498,6 +584,12 @@ function UI.SetModeActive(mode)
   end
 end
 
+local function onScopeSelect(key)
+  UI.scope = key
+  if ns.SetSetting then ns.SetSetting("scope", key) end
+  UI.Refresh()
+end
+
 function UI.UpdateControls()
   local scopes = ns.GetScopes()
   local label
@@ -505,11 +597,7 @@ function UI.UpdateControls()
     if sc.key == UI.scope then label = sc.name end
   end
   UI.scopeDD:SetValue(label or UI.scope or "")
-  UI.scopeDD:SetItems(scopes, UI.scope, function(key)
-    UI.scope = key
-    if ns.SetSetting then ns.SetSetting("scope", key) end
-    UI.Refresh()
-  end)
+  UI.scopeDD:SetItems(scopes, UI.scope, onScopeSelect)
   UI.SetModeActive(UI.mode)
   -- Scope only applies to Lifetime; Session is always the current character. The "New session"
   -- reset is the converse -- only meaningful in the Session view.
@@ -525,13 +613,19 @@ end
 
 function UI.RebuildBody()
   if not UI.window then return end
-  if UI.body then UI.body:Hide(); UI.body:SetParent(nil); UI.body = nil end
-  local body = CreateFrame("Frame", nil, UI.window)
-  UI.body = body
-  -- Full window width; the PAD insets are applied inside the builders. y -60 sits just
-  -- below the controls row (controls: top -32, height 22, +6 gap).
-  body:SetPoint("TOPLEFT", UI.window, "TOPLEFT", 0, -60)
-  body:SetPoint("TOPRIGHT", UI.window, "TOPRIGHT", 0, -60)
+  -- The body frame is created ONCE and kept; its content comes from the widget pools,
+  -- so a rebuild is release-everything + re-acquire (frames are never GC'd -- the old
+  -- SetParent(nil) teardown leaked every widget it ever made).
+  releaseBodyWidgets()
+  local body = UI.body
+  if not body then
+    body = CreateFrame("Frame", nil, UI.window)
+    UI.body = body
+    -- Full window width; the PAD insets are applied inside the builders. y -60 sits just
+    -- below the controls row (controls: top -32, height 22, +6 gap).
+    body:SetPoint("TOPLEFT", UI.window, "TOPLEFT", 0, -60)
+    body:SetPoint("TOPRIGHT", UI.window, "TOPRIGHT", 0, -60)
+  end
   local p = PALETTES[UI.themeKey]
   local data = gatherData()
   local h
@@ -620,9 +714,9 @@ local function BuildWindow()
     UI.modeBtns[key] = btn
     return btn
   end
-  local lifeBtn = modeBtn("Lifetime", "lifetime")
+  local lifeBtn = modeBtn(L["Lifetime"], "lifetime")
   lifeBtn:SetPoint("RIGHT", 0, 0)
-  local sessBtn = modeBtn("Session", "session")
+  local sessBtn = modeBtn(L["Session"], "session")
   sessBtn:SetPoint("RIGHT", lifeBtn, "LEFT", 4, 0)
 
   -- "New session" action -- sits left of the Session/Lifetime selector, shown in Session view
@@ -632,7 +726,7 @@ local function BuildWindow()
   newSess:SetSize(96, 20)
   newSess.bg = MakeTex(newSess, { 1, 1, 1, 0.04 }); newSess.bg:SetAllPoints()
   newSess.fs = MakeFS(newSess, 12, { 0.6, 0.6, 0.6 })
-  newSess.fs:SetPoint("CENTER"); newSess.fs:SetText("New session")
+  newSess.fs:SetPoint("CENTER"); newSess.fs:SetText(L["New session"])
   -- Left edge of the controls row -- the same slot the scope dropdown uses in Lifetime view.
   -- They never show together (scope = Lifetime only, this = Session only), so sharing it is fine.
   newSess:SetPoint("LEFT", 0, 0)
@@ -673,7 +767,10 @@ end
 function UI.RefreshCompact()
   if not UI.compact then return end
   local loc = ns.GetCurrentLocation()
-  local t = ns.GetTotals(UI.scope, "session")
+  -- Session data is keyed to the current character -- never the Lifetime scope
+  -- selector, which can point at another character (or "account", summing every
+  -- character's session) and would render a wrong/zero strip.
+  local t = ns.GetTotals(ns.GetSessionScope(), "session")
   local where = (loc.subZone and loc.subZone ~= "") and loc.subZone or loc.zone
   local p = PALETTES[UI.themeKey or "blend"]
   setTex(UI.compact.icon, p.accent)
@@ -696,7 +793,7 @@ function UI.SetCollapsed(collapsed)
   else
     UI.compact:Hide()
     UI.window:Show()
-    UI.Refresh()
+    UI.Refresh()  -- keep: repaints a window dirtied while hidden (coalesced refreshes skip it)
   end
 end
 
@@ -755,8 +852,8 @@ function UI.BuildMinimap()
   b:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
     GameTooltip:AddLine("Fish & Tips")
-    GameTooltip:AddLine("Left-click to show the stats window.", 0.8, 0.8, 0.8)
-    GameTooltip:AddLine("Right-click for options.", 0.8, 0.8, 0.8)
+    GameTooltip:AddLine(L["Left-click to show the stats window."], 0.8, 0.8, 0.8)
+    GameTooltip:AddLine(L["Right-click for options."], 0.8, 0.8, 0.8)
     GameTooltip:Show()
   end)
   b:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -784,6 +881,7 @@ function UI.Toggle()
       UI.window:Hide()
       if ns.SetSetting then ns.SetSetting("uiShown", false) end
     else
+      -- keep the Refresh: it repaints a window dirtied while hidden (coalesced refreshes skip it)
       UI.window:Show(); UI.Refresh()
       if ns.SetSetting then ns.SetSetting("uiShown", true) end
     end
@@ -834,10 +932,24 @@ local ef = CreateFrame("Frame")
 ef:RegisterEvent("PLAYER_LOGIN")
 ef:SetScript("OnEvent", function()
   UI.Build()
-  ns.RegisterRefresh(function()
-    if UI.window and (UI.window:IsShown() or (UI.compact and UI.compact:IsShown())) then
+  -- Coalesced refresh: several data events can land in one frame (a zone change plus a
+  -- cast; settings toggles), so the subscriber only schedules ONE flush for the next
+  -- frame. Visibility is decided at flush time, and only the visible surface repaints:
+  -- with just the compact strip up, the hidden full window is NOT rebuilt -- it simply
+  -- repaints on show (every show path calls UI.Refresh).
+  local refreshPending = false
+  local function flushRefresh()
+    refreshPending = false
+    if UI.window and UI.window:IsShown() then
       UI.Refresh()
+    elseif UI.compact and UI.compact:IsShown() then
+      UI.RefreshCompact()
     end
+  end
+  ns.RegisterRefresh(function()
+    if refreshPending then return end
+    refreshPending = true
+    if C_Timer and C_Timer.After then C_Timer.After(0, flushRefresh) else flushRefresh() end
   end)
   ns.RegisterFishingStart(function()
     local s = ns.GetSettings and ns.GetSettings()
