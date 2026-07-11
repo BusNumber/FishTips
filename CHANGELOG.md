@@ -57,4 +57,5 @@ Initial public release. For **Midnight, patch 12.0.7** (retail).
 - **Movable stats window** with a Session/Lifetime toggle and a character/Warband scope selector,
   and a **compact strip**.
 
+[1.1.0]: https://github.com/BusNumber/FishTips/releases/tag/v1.1.0
 [1.0.0]: https://github.com/BusNumber/FishTips/releases/tag/v1.0.0
