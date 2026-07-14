@@ -10,7 +10,9 @@ local M = {}
 
 -- Mutable knobs. Reset by install().
 local function resetState()
-  M.now = 1000            -- GetTime clock
+  M.now = 1000            -- GetTime clock (uptime; does NOT survive a simulated reload)
+  M.epoch = 1720000000    -- time() clock (wall clock; carried across a reload via opts.setup)
+  M.timers = {}           -- pending C_Timer.After callbacks { at=, fn=, done= }
   M.charName = "Tester"
   M.realm = "TestRealm"
   M.zone = "Zone1"
@@ -26,7 +28,25 @@ local function resetState()
 end
 
 function M.setTime(t) M.now = t end
-function M.advance(dt) M.now = M.now + dt end
+
+-- Advance both clocks, then run any C_Timer callbacks that came due (a callback may
+-- schedule more, so loop until quiet) -- models the game's timer wheel.
+function M.advance(dt)
+  M.now = M.now + dt
+  M.epoch = M.epoch + dt
+  local ran = true
+  while ran do
+    ran = false
+    for i = 1, #M.timers do
+      local t = M.timers[i]
+      if t and not t.done and t.at <= M.now then
+        t.done = true
+        ran = true
+        t.fn()
+      end
+    end
+  end
+end
 
 -- Loot-window model: slots = array of { itemID=, name=, quantity=, quality=, link= }.
 -- link = false models a money slot (GetLootSlotLink returns nil for it).
@@ -59,6 +79,12 @@ function M.install()
   resetState()
 
   _G.GetTime = function() return M.now end
+  _G.time = function() return M.epoch end
+  _G.C_Timer = {
+    After = function(delay, fn)
+      M.timers[#M.timers + 1] = { at = M.now + delay, fn = fn }
+    end,
+  }
 
   -- Mock frame: captures RegisterEvent + SetScript so M.fire can drive OnEvent.
   _G.CreateFrame = function()

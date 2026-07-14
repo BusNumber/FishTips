@@ -19,15 +19,23 @@ is worth at auction, live, while you fish.
   rollup — and a casts/catch-per-hour readout. Gray junk catches can be hidden from the
   stats with one toggle (shown by default — `/ft junk off` or the **Include junk items**
   option); they keep being tracked either way.
+- **Fishing session management.** The session view shows everything you've caught this
+  outing, **wherever** you caught it — hop between fishing pools across a whole zone (or
+  three) and the list keeps up. The **fish/hour timer pauses** when you stop fishing, so an
+  AFK break doesn't wreck your rate — but flying around hunting the next pool still counts,
+  as it should. Come back after a long break and your next cast simply starts a **fresh
+  session** (you pick the rule: after inactivity, on zone change, both, or manual-only —
+  and your session even survives a `/reload`). If the window opened itself when you started
+  fishing, it also tucks itself away when you stop; a window you opened stays put.
 - **Auctionator gold values.** Fish to sell? If you have **Auctionator** installed, the stats
   window shows what your session is worth: each fish shows the value of your catch (count ×
   auction price), and the footer and compact strip show a running **session total**. On by
   default (it only ever shows with Auctionator installed); turn it off under **Show Auctionator
   prices** or with `/ft auc off`.
 
-The stats live in a movable window you can toggle from a slash command or the minimap
-button — and it can **open itself when you start fishing** — with your current spot
-highlighted:
+The stats live in a movable window you can toggle from a slash command or the minimap's
+**addon compartment** (plus an optional minimap button) — and it can **open itself when 
+you start fishing** — with your current spot highlighted:
 
 ```
 Fish & Tips — this session                  78 casts · 284 catches/hr
@@ -50,11 +58,13 @@ Fish & Tips — this session                  78 casts · 284 catches/hr
 4. Restart WoW, or `/reload` if it's running. Make sure **Fish & Tips** is enabled in the
    AddOns list on the character-select screen.
 
-Options and the stats window are reachable from the slash command and a minimap button.
+Options and the stats window are reachable from the slash command (`/ft`) and the
+minimap's addon compartment — left-click the entry for the stats window, right-click for
+options. Prefer a dedicated minimap button? Turn on **Show minimap button** in the options.
 
 ## Scope (current version)
 
-The core loop runs end to end: open the window with `/ft` or the minimap button, switch
+The core loop runs end to end: open the window with `/ft` or from the addon compartment, switch
 between Session and Lifetime and between a character and your Warband, double-right-click the
 water to cast, and watch your catches auto-loot and log by location.
 
@@ -62,11 +72,11 @@ water to cast, and watch your catches auto-loot and log by location.
 - 🟢 Catch tracking (recording fish by zone, keyed by item ID) — *working*
 - 🟢 Cast count and fish/hour — *working*
 - 🟢 Auto-open when fishing starts (full window or compact strip) — *working*
+- 🟢 Smart sessions — auto-end rules, pausing fish/hr timer, whole-session catch list, `/reload`-proof — *built*
 - 🟢 Casting — keybind **and/or** double-right-click, chosen in options (off by default) — *working*
 - 🟢 Fishing-only auto-loot (on by default; toggle in options) — *working*
 - 🟢 Auctionator gold values for the session (on by default; shows only with Auctionator installed) — *working*
 - ⬜ Auto-discard junk (sell or throw back gray catches) *(planned)*
-- ⬜ Import from legacy catch-trackers *(not planned)*
 - ⬜ Auto-best-lure, gear/outfit swap, enhanced sound *(planned)*
 - ⬜ Gold / auction-house analytics per zone *(planned)*
 

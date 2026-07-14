@@ -12,6 +12,12 @@ ns.UI = UI
 
 local L = ns.L  -- user-facing strings go through the locale table (English keys)
 
+-- Auto-open/auto-hide ownership: UI.autoShown is true while the visible surface was
+-- shown by the auto-open path and untouched since. Any player interaction -- manual
+-- toggle, a drag, any control click -- promotes the surface to player-owned, and
+-- auto-hide (the session-pause subscriber at the bottom) then leaves it alone.
+local function markOwned() UI.autoShown = false end
+
 local WIN_W = 340
 local PAD = 12
 local INNER = WIN_W - 2 * PAD
@@ -318,7 +324,11 @@ local function gatherData()
     mode = mode, loc = loc,
     session = ns.GetTotals(sessionScope, "session"),
     lifetime = ns.GetTotals(lifeScope, "lifetime"),
-    items = ns.GetLocationItems(lifeScope, mode, loc.zone, loc.subZone),
+    -- Session view lists the WHOLE session (all locations, merged) -- a pool-hunter's
+    -- catches must not vanish from the list when they fly to the next pool. Location
+    -- filtering stays a Lifetime-view concern.
+    items = (mode == "session") and ns.GetSessionItems(sessionScope)
+            or ns.GetLocationItems(lifeScope, mode, loc.zone, loc.subZone),
     zones = wantZones and ns.GetZoneTotals(lifeScope, "lifetime") or nil,
   }
 end
@@ -585,6 +595,7 @@ function UI.SetModeActive(mode)
 end
 
 local function onScopeSelect(key)
+  markOwned()
   UI.scope = key
   if ns.SetSetting then ns.SetSetting("scope", key) end
   UI.Refresh()
@@ -663,7 +674,7 @@ local function BuildWindow()
 
   window:SetMovable(true); window:EnableMouse(true)
   window:RegisterForDrag("LeftButton")
-  window:SetScript("OnDragStart", window.StartMoving)
+  window:SetScript("OnDragStart", function(self) markOwned(); self:StartMoving() end)
   window:SetScript("OnDragStop", function(self) self:StopMovingOrSizing(); savePos() end)
 
   local fishSwatch = MakeTex(window, PALETTES.blend.accent, "ARTWORK")
@@ -680,14 +691,14 @@ local function BuildWindow()
   local cfs = MakeFS(collapse, 18, { 0.6, 0.6, 0.6 }); cfs:SetPoint("CENTER", 0, 3); cfs:SetText("_")
   collapse:SetScript("OnEnter", function() cfs:SetTextColor(0.95, 0.95, 0.95) end)
   collapse:SetScript("OnLeave", function() cfs:SetTextColor(0.6, 0.6, 0.6) end)
-  collapse:SetScript("OnClick", function() UI.SetCollapsed(true) end)
+  collapse:SetScript("OnClick", function() markOwned(); UI.SetCollapsed(true) end)
 
   local gear = CreateFrame("Button", nil, window)
   gear:SetSize(20, 20); gear:SetPoint("RIGHT", collapse, "LEFT", 0, 0)
   local gicon = gear:CreateTexture(nil, "ARTWORK")
   gicon:SetTexture("Interface\\Buttons\\UI-OptionsButton")
   gicon:SetAllPoints()
-  gear:SetScript("OnClick", function() if ns.OpenConfig then ns.OpenConfig() end end)
+  gear:SetScript("OnClick", function() markOwned(); if ns.OpenConfig then ns.OpenConfig() end end)
 
   local controls = CreateFrame("Frame", nil, window)
   UI.controls = controls
@@ -705,6 +716,7 @@ local function BuildWindow()
     btn.bg = MakeTex(btn, { 1, 1, 1, 0.04 }); btn.bg:SetAllPoints()
     btn.fs = MakeFS(btn, 12, { 0.6, 0.6, 0.6 }); btn.fs:SetPoint("CENTER"); btn.fs:SetText(text)
     btn:SetScript("OnClick", function()
+      markOwned()
       UI.mode = key
       if ns.SetSetting then ns.SetSetting("statMode", key) end
       UI.UpdateControls()
@@ -733,6 +745,7 @@ local function BuildWindow()
   newSess:SetScript("OnEnter", function(self) self.fs:SetTextColor(0.95, 0.95, 0.95) end)
   newSess:SetScript("OnLeave", function(self) self.fs:SetTextColor(0.6, 0.6, 0.6) end)
   newSess:SetScript("OnClick", function()
+    markOwned()
     StaticPopup_Show("FISHTIPS_RESET_SESSION")  -- confirm before wiping the live session
   end)
 end
@@ -747,7 +760,7 @@ function UI.BuildCompact()
   c.bg = MakeTex(c, { 0.043, 0.047, 0.067, 0.95 }); c.bg:SetAllPoints()
   c.border = MakeBorder(c, { 1, 1, 1, 0.10 })
   c:EnableMouse(true); c:SetMovable(true); c:RegisterForDrag("LeftButton")
-  c:SetScript("OnDragStart", c.StartMoving)
+  c:SetScript("OnDragStart", function(self) markOwned(); self:StartMoving() end)
   c:SetScript("OnDragStop", function(self) self:StopMovingOrSizing(); saveCompactPos() end)
 
   c.icon = MakeTex(c, { 0.608, 0.529, 0.961, 1 }, "ARTWORK")
@@ -760,7 +773,7 @@ function UI.BuildCompact()
   local efs = MakeFS(expand, 16, { 0.55, 0.55, 0.6 }); efs:SetPoint("CENTER"); efs:SetText("+")
   expand:SetScript("OnEnter", function() efs:SetTextColor(0.95, 0.95, 0.95) end)
   expand:SetScript("OnLeave", function() efs:SetTextColor(0.55, 0.55, 0.6) end)
-  expand:SetScript("OnClick", function() UI.SetCollapsed(false) end)
+  expand:SetScript("OnClick", function() markOwned(); UI.SetCollapsed(false) end)
   c:Hide()
 end
 
@@ -803,7 +816,9 @@ end
 local function placeMinimap(angleDeg)
   if not UI.minimap then return end
   local a = math.rad(angleDeg)
-  local r = 80
+  -- Half the live minimap width + margin, not a constant: Edit Mode can resize/rescale
+  -- the minimap (the default 140-wide ring yields the classic 80).
+  local r = (Minimap:GetWidth() / 2) + 10
   UI.minimap:ClearAllPoints()
   UI.minimap:SetPoint("CENTER", Minimap, "CENTER", r * math.cos(a), r * math.sin(a))
 end
@@ -834,8 +849,15 @@ function UI.BuildMinimap()
 
   local icon = b:CreateTexture(nil, "BACKGROUND")
   icon:SetTexture("Interface\\Icons\\inv_fishingpole_05")
-  icon:SetSize(20, 20); icon:SetPoint("CENTER", -1, 1)
+  -- 17x17 at TOPLEFT (7,-6) centers the icon in the TrackingBorder ring's opening;
+  -- the circular mask clips the square corners the ring art doesn't cover.
+  icon:SetSize(17, 17); icon:SetPoint("TOPLEFT", 7, -6)
   icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+  local mask = b:CreateMaskTexture()
+  mask:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask",
+    "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+  mask:SetAllPoints(icon)
+  icon:AddMaskTexture(mask)
   local overlay = b:CreateTexture(nil, "OVERLAY")
   overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
   overlay:SetSize(53, 53); overlay:SetPoint("TOPLEFT")
@@ -861,12 +883,52 @@ function UI.BuildMinimap()
   local s = ns.GetSettings and ns.GetSettings()
   placeMinimap((s and s.minimapAngle) or 200)
   if s and s.showMinimap == false then b:Hide() end
+
+  -- The radius derives from the live minimap width, so re-place when Edit Mode
+  -- resizes it. Cosmetic positioning of our own insecure button -- no protected calls.
+  Minimap:HookScript("OnSizeChanged", function()
+    local cur = ns.GetSettings and ns.GetSettings()
+    placeMinimap((cur and cur.minimapAngle) or 200)
+  end)
+end
+
+-- ---------------------------------------------------------------------------
+-- Addon Compartment (Blizzard's addon drawer on the minimap)
+-- ---------------------------------------------------------------------------
+-- The TOC's ## AddonCompartmentFunc* directives resolve these by name, so all three
+-- must be globals. The drawer entry is the default access path; the custom minimap
+-- button above is opt-in (showMinimap, default off). Since 11.0 the handlers receive
+-- (addonName, buttonName) with no menu-button frame, so the tooltip anchors to the
+-- compartment frame when the client doesn't hand us a region.
+
+function FishTips_OnAddonCompartmentClick(_, buttonName)
+  if buttonName == "RightButton" then
+    if ns.OpenConfig then ns.OpenConfig() end
+  else
+    UI.Toggle()
+  end
+end
+
+function FishTips_OnAddonCompartmentEnter(_, anchor)
+  local owner = (type(anchor) == "table" and anchor.GetObjectType and anchor)
+    or AddonCompartmentFrame
+  if not owner then return end
+  GameTooltip:SetOwner(owner, "ANCHOR_LEFT")
+  GameTooltip:AddLine("Fish & Tips")
+  GameTooltip:AddLine(L["Left-click to show the stats window."], 0.8, 0.8, 0.8)
+  GameTooltip:AddLine(L["Right-click for options."], 0.8, 0.8, 0.8)
+  GameTooltip:Show()
+end
+
+function FishTips_OnAddonCompartmentLeave()
+  GameTooltip:Hide()
 end
 
 -- ---------------------------------------------------------------------------
 -- Public toggle + refresh
 -- ---------------------------------------------------------------------------
 function UI.Toggle()
+  markOwned()  -- a manual show/hide always takes ownership from auto-open
   local s = ns.GetSettings and ns.GetSettings()
   if s and s.uiCollapsed then
     if UI.compact:IsShown() then
@@ -905,6 +967,7 @@ function UI.ShowWindow(mode)
   if not UI.window then return end
   if UI.window:IsShown() or (UI.compact and UI.compact:IsShown()) then return end
   UI.SetCollapsed(mode == "collapsed")
+  UI.autoShown = true  -- auto-hide may tuck this surface away when the session pauses
 end
 
 function UI.Build()
@@ -955,5 +1018,23 @@ ef:SetScript("OnEvent", function()
     local s = ns.GetSettings and ns.GetSettings()
     local mode = (s and s.autoOpen) or "full"
     if mode ~= "off" then UI.ShowWindow(mode) end
+  end)
+  -- The symmetric half of auto-open: when the session pauses (grace minutes after the
+  -- last cast), tuck away the surface auto-open showed. Never a surface the player
+  -- opened or touched (any interaction runs markOwned), never one under the mouse
+  -- (it's in use -- the next fishing stop re-arms the pause), and uiShown is never
+  -- persisted: like auto-open, auto-hide is transient. Requires sessionPause too: the
+  -- options panel nests auto-hide under the pause checkbox, so its gray-out must not lie.
+  ns.RegisterSessionPause(function()
+    local s = ns.GetSettings and ns.GetSettings()
+    if not (s and s.autoHide and s.sessionPause) then return end
+    if not UI.autoShown then return end
+    local surface
+    if UI.window and UI.window:IsShown() then surface = UI.window
+    elseif UI.compact and UI.compact:IsShown() then surface = UI.compact end
+    if not surface then UI.autoShown = false; return end
+    if surface:IsMouseOver() then return end
+    surface:Hide()
+    UI.autoShown = false
   end)
 end)

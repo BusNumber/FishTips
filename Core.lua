@@ -37,6 +37,22 @@ function ns.FireFishingStart()
   end
 end
 
+-- Session-pause notification -- fired once when the session goes idle (the pause grace
+-- elapses after the last cast with no new one). The UI subscribes to auto-hide an
+-- auto-opened surface. Separate from FireRefresh for the same reason as
+-- FireFishingStart: this must be able to *hide* a surface, not just repaint one.
+local sessionPausers = {}
+
+function ns.RegisterSessionPause(fn)
+  sessionPausers[#sessionPausers + 1] = fn
+end
+
+function ns.FireSessionPause()
+  for i = 1, #sessionPausers do
+    sessionPausers[i]()
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- Character identity -- resolved lazily; the normalized realm is unreliable at
 -- ADDON_LOADED, so we wait until PLAYER_LOGIN / first use (PEW-safe).
@@ -62,19 +78,90 @@ function ns.GetSessionScope()
 end
 
 -- ---------------------------------------------------------------------------
--- Session bookkeeping (in-memory; resets on login/reload)
+-- Session bookkeeping. The bucket lives in memory, keyed by charKey, and is also
+-- linked into the DB as a disposable snapshot (db.chars[key].session) so it survives
+-- /reload -- see sessionOf/restoreSession. Session TIME is an ACTIVE-time
+-- accumulator, not a start timestamp: each cast adds the gap since the previous
+-- cast, capped at the pause grace, so a pool-hunter's between-pool flying counts in
+-- full while an AFK break adds at most the grace. Session BOUNDARIES are judged
+-- lazily at the next cast (never by a timer or zone event), so a finished session
+-- stays readable on screen until fishing actually resumes.
 -- ---------------------------------------------------------------------------
-ns.sessionStart = nil
-local realSession = {}  -- [charKey] = { casts = n, zones = {...} }
+local realSession = {}  -- [charKey] = { casts, zones, activeTime, lastCastAt, lastCastEpoch, lastCastZone }
+
+-- The per-gap cap on counted session time (seconds); also the auto-hide delay.
+local function pauseGraceSecs()
+  local s = ns.GetSettings and ns.GetSettings()
+  return ((s and s.sessionGraceMinutes) or 5) * 60
+end
+
+-- The cap the CLOCK actually applies: uncapped when the pause setting is off
+-- (wall-clock behavior). The pause *notifier* keys off pauseGraceSecs regardless --
+-- that checkbox only governs the elapsed-time arithmetic.
+local function clockGraceSecs()
+  local s = ns.GetSettings and ns.GetSettings()
+  if s and s.sessionPause == false then return math.huge end
+  return pauseGraceSecs()
+end
+
+-- Does a new cast (or a restored snapshot) begin a NEW session? gap = seconds since
+-- the session's last cast (nil = unknown); zoneChanged = nil means "can't tell yet"
+-- (login) -- the zone-based modes then wait for the next cast to decide.
+local function sessionEnded(gap, zoneChanged)
+  local s = ns.GetSettings and ns.GetSettings()
+  local mode = (s and s.sessionEnd) or "idle"
+  if mode == "manual" then return false end
+  local idle = gap ~= nil and gap > ((s and s.sessionIdleMinutes) or 30) * 60
+  if mode == "idle" then return idle end
+  if mode == "zone" then return zoneChanged == true end
+  return zoneChanged == true and idle  -- "zoneidle": both, so a same-spot AFK return continues
+end
 
 function ns.SessionElapsed()
   if ns.demoOn then
     return ns.demo and ns.demo.sessionElapsed or 0
   end
-  if ns.sessionStart then
-    return GetTime() - ns.sessionStart
+  local key = ns.CharKey()
+  local sess = key and realSession[key]
+  if not sess then return 0 end
+  local elapsed = sess.activeTime or 0
+  -- Live tail since the last cast, capped like any other gap -- this is what makes
+  -- the footer clock visibly freeze at activeTime + grace while idle. Right after a
+  -- /reload lastCastAt is gone (uptime clock), so the tail runs on the epoch stamp
+  -- instead and the displayed minutes never dip.
+  if sess.lastCastAt then
+    elapsed = elapsed + math.min(GetTime() - sess.lastCastAt, clockGraceSecs())
+  elseif sess.lastCastEpoch and time then
+    elapsed = elapsed + math.min(time() - sess.lastCastEpoch, clockGraceSecs())
   end
-  return 0
+  return elapsed
+end
+
+-- Auto-hide's trigger: the ONE deliberate timer in the session model (a pause must
+-- ACT at a moment; every other boundary is judged lazily at the next cast). Armed
+-- when a fishing channel ends, for the remainder of lastCastAt + grace; a new cast
+-- bumps the generation token so an in-flight callback no-ops (C_Timer.After has no
+-- cancel handle).
+local pauseGen = 0
+
+local function cancelPauseTimer()
+  pauseGen = pauseGen + 1
+end
+
+local function armPauseTimer()
+  pauseGen = pauseGen + 1
+  if not (C_Timer and C_Timer.After) then return end
+  local key = ns.CharKey()
+  local sess = key and realSession[key]
+  if not (sess and sess.lastCastAt) then return end
+  local gen = pauseGen
+  local delay = sess.lastCastAt + pauseGraceSecs() - GetTime()
+  if delay < 0 then delay = 0 end
+  C_Timer.After(delay, function()
+    if gen ~= pauseGen then return end   -- superseded by a newer cast
+    if ns.fishingActive then return end  -- mid-channel; the next stop re-arms
+    ns.FireSessionPause()
+  end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -255,6 +342,44 @@ function ns.GetLocationItems(scope, mode, zone, sub)
             merged[itemID] = m
           end
           m.count = m.count + (it.count or 0)
+        end
+      end
+    end
+  end
+  local list = {}
+  for _, m in pairs(merged) do
+    list[#list + 1] = resolveItem(m)
+  end
+  table.sort(list, function(a, b) return a.count > b.count end)
+  return list
+end
+
+-- Whole-session catch list: everything recorded this session, across all zones/subs,
+-- merged by itemID (count-desc, same row shape as GetLocationItems). The Session view
+-- renders this -- a pool-hunter's list must not empty out when they fly to the next
+-- pool; location filtering stays a Lifetime-view concern.
+function ns.GetSessionItems(scope)
+  local merged = {}
+  local hide = junkHidden()
+  for _, c in pairs(scopeChars(scope)) do
+    local b = c.session
+    if b and b.zones then
+      for _, z in pairs(b.zones) do
+        if z.subs then
+          for _, sub in pairs(z.subs) do
+            if sub.items then
+              for itemID, it in pairs(sub.items) do
+                if not (hide and it.quality == 0) then
+                  local m = merged[itemID]
+                  if not m then
+                    m = { itemID = itemID, count = 0, name = it.name, quality = it.quality, link = it.link }
+                    merged[itemID] = m
+                  end
+                  m.count = m.count + (it.count or 0)
+                end
+              end
+            end
+          end
         end
       end
     end
@@ -501,8 +626,34 @@ end
 
 local function sessionOf(key)
   local sess = realSession[key]
-  if not sess then sess = { casts = 0, zones = {} }; realSession[key] = sess end
+  if not sess then
+    sess = { casts = 0, zones = {}, activeTime = 0 }
+    realSession[key] = sess
+    -- Link the live struct into the DB as a disposable snapshot: SavedVariables
+    -- serialize at logout/reload, so the session survives a /reload with no explicit
+    -- save step. (On the downgrade guard's throwaway store this is a harmless no-op --
+    -- that table is never saved.)
+    local db = ns.db
+    if db then
+      db.chars = db.chars or {}
+      local c = db.chars[key]
+      if not c then c = {}; db.chars[key] = c end
+      c.session = sess
+    end
+  end
   return sess
+end
+
+-- One quiet line when a session ends itself, so the reset isn't a mystery -- the
+-- closed session's final tally. Skipped when it caught nothing, and not used for the
+-- manual "New session" button (the player asked for that reset).
+local function summarizeSession(sess, elapsed)
+  local catches = bucketCatches(sess)
+  if catches == 0 then return end
+  local mins = math.floor(elapsed / 60 + 0.5)
+  local rate = elapsed > 0 and math.floor(catches / (elapsed / 3600) + 0.5) or 0
+  print("|cffffd36eFish & Tips|r: " .. (ns.L["session ended: %d casts, %d catches in %dm (%d/hr)."])
+    :format(sess.casts or 0, catches, mins, rate))
 end
 
 function ns.RecordCast()
@@ -511,18 +662,48 @@ function ns.RecordCast()
   local life = lifetimeOf(key)
   if life then life.casts = (life.casts or 0) + 1 end
   local sess = sessionOf(key)
+  local now = GetTime()
+  local zone = currentZoneSub()
+  -- Session boundary -- judged HERE, lazily, on the next cast (never a timer or a
+  -- zone event). A /reload gap is measured off the persisted epoch stamp when the
+  -- uptime clock didn't survive.
+  local gap
+  if sess.lastCastAt then
+    gap = now - sess.lastCastAt
+  elseif sess.lastCastEpoch and time then
+    gap = time() - sess.lastCastEpoch
+  end
+  local zoneChanged = sess.lastCastZone ~= nil and zone ~= sess.lastCastZone
+  if sessionEnded(gap, zoneChanged) then
+    summarizeSession(sess, (sess.activeTime or 0) + math.min(gap or 0, clockGraceSecs()))
+    realSession[key] = nil
+    sess = sessionOf(key)
+    gap = nil
+  end
+  -- Active-time clock: the gap counts toward elapsed only up to the pause grace.
+  if gap then
+    sess.activeTime = (sess.activeTime or 0) + math.min(gap, clockGraceSecs())
+  end
   sess.casts = (sess.casts or 0) + 1
+  sess.lastCastAt = now
+  sess.lastCastEpoch = time and time() or nil
+  sess.lastCastZone = zone
   ns.FireRefresh()
 end
 
--- Reset the live session for the current character: drop the in-memory session store and
--- restart the elapsed clock, so the Session view reads as if fishing had just begun. The
--- persisted lifetime history is never touched. (Under demo the Session view is backed by the
+-- Reset the live session for the current character: drop the in-memory session store
+-- (and its persisted snapshot), so the Session view reads as if fishing had just
+-- begun -- the elapsed clock stays at zero until the next cast. The persisted
+-- lifetime history is never touched. (Under demo the Session view is backed by the
 -- fixed mock dataset, so this has no visible effect there.)
 function ns.ResetSession()
   local key = ns.CharKey()
-  if key then realSession[key] = nil end
-  ns.sessionStart = GetTime()
+  if key then
+    realSession[key] = nil
+    local db = ns.db
+    local c = db and db.chars and db.chars[key]
+    if c then c.session = nil end
+  end
   ns.FireRefresh()
 end
 
@@ -606,6 +787,36 @@ local function migrate(db)
   -- while db.version < DB_VERSION do ... db.version = db.version + 1 end
 end
 
+-- Restore the persisted session snapshot for the current character (linked by
+-- reference in sessionOf; survives /reload). The uptime-based lastCastAt can't cross
+-- a reload -- it is dropped, and the next cast (and the live elapsed tail) measure
+-- the gap off lastCastEpoch instead. The end-rule judges the reload gap right here
+-- where it already can (the idle half, so a week-old session doesn't greet the
+-- player at login); the zone half can't be known yet, so those modes restore and
+-- decide at the next cast. The snapshot is DISPOSABLE data: malformed shapes are
+-- discarded, never migrated -- unlike the catch history.
+local function restoreSession(key)
+  local db = ns.db
+  local c = db and db.chars and db.chars[key]
+  local snap = c and c.session
+  if type(snap) ~= "table" or type(snap.zones) ~= "table" then
+    if c and snap ~= nil then c.session = nil end
+    return
+  end
+  snap.casts = type(snap.casts) == "number" and snap.casts or 0
+  snap.activeTime = type(snap.activeTime) == "number" and snap.activeTime or 0
+  if type(snap.lastCastEpoch) ~= "number" then snap.lastCastEpoch = nil end
+  if type(snap.lastCastZone) ~= "string" then snap.lastCastZone = nil end
+  snap.lastCastAt = nil
+  local gap
+  if snap.lastCastEpoch and time then gap = time() - snap.lastCastEpoch end
+  if sessionEnded(gap, nil) then
+    c.session = nil  -- the break outlived the session; a fresh one starts at the next cast
+    return
+  end
+  realSession[key] = snap
+end
+
 local f = CreateFrame("Frame")
 f:RegisterEvent("ADDON_LOADED")
 f:RegisterEvent("PLAYER_LOGIN")
@@ -642,8 +853,8 @@ f:SetScript("OnEvent", function(_, event, arg1, _, arg3)  -- arg3 = spellID (spe
       if ns.InitSettings then ns.InitSettings(db) end
     end
   elseif event == "PLAYER_LOGIN" then
-    ns.sessionStart = GetTime()
-    ns.CharKey()
+    local key = ns.CharKey()
+    if key then restoreSession(key) end
   elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
     if arg1 == "player" then
       if ns.castDebug then  -- logs the REAL fishing spellID (manual cast) + whether we matched it
@@ -654,6 +865,7 @@ f:SetScript("OnEvent", function(_, event, arg1, _, arg3)  -- arg3 = spellID (spe
         ns.fishingActive = true
         ns.lastFishing = GetTime()
         lootProcessed = false  -- a new cast: any previous loot window is over, even if LOOT_CLOSED was missed
+        cancelPauseTimer()     -- fishing resumed; a pending pause no longer applies
         ns.RecordCast()
         ns.FireFishingStart()
       end
@@ -662,6 +874,7 @@ f:SetScript("OnEvent", function(_, event, arg1, _, arg3)  -- arg3 = spellID (spe
     if arg1 == "player" and isFishingSpell(arg3) then
       ns.fishingActive = false
       ns.lastFishing = GetTime()
+      armPauseTimer()  -- fires the session-pause notifier if no new cast lands within the grace
     end
   elseif event == "UNIT_SPELLCAST_SUCCEEDED" or event == "UNIT_SPELLCAST_FAILED" then
     if arg1 == "player" and ns.castDebug then  -- dev probe: did our cast even reach the server?

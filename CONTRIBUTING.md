@@ -111,16 +111,54 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
 - [ ] If the CVar fallback is in use, the player's prior `autoLootDefault` is restored
       after fishing across `/reload`, logout, and a disconnect.
 
+### Sessions
+
+- [ ] With **Start a new session = After inactivity** (the default): a cast within the
+      timeout continues the session; a cast after a break longer than the timeout starts a
+      fresh one, with **one** chat line summarizing the old session's tally (no line when it
+      had no catches; no line from the manual **New session** button).
+- [ ] **When the zone changes**: casting in a new zone starts a fresh session; recasting in
+      the same zone never does. **Zone change + inactivity**: needs BOTH — an AFK return to
+      the same spot continues, and a quick hop to the next zone's pool continues too.
+- [ ] **Manually only**: nothing but the **New session** button ever resets the session —
+      not zone changes, not hour-long breaks, not `/reload`.
+- [ ] The **Session view lists the whole session across zones**: fly to another zone and
+      keep fishing — earlier catches stay in the list (merged per fish); the **Lifetime**
+      view still filters to the current zone/subzone.
+- [ ] With **Pause session when not fishing** on (the default), the footer minutes stop climbing
+      ~grace after the last cast and fish/hr stops decaying; the next cast resumes with no
+      jump in the minutes. With it off, the timer runs wall-clock. Flying a couple of
+      minutes between pools counts toward the timer either way.
+- [ ] Mid-fishing `/reload` → the session (counts, catches, timer) **resumes**, with no
+      jump or dip in the footer minutes; after a break longer than the inactivity timeout,
+      login starts clean instead.
+- [ ] **Auto-hide:** a window (or compact strip) that **auto-open** showed tucks itself away
+      ~grace after the last cast, and comes back on the next cast. A window opened via the
+      slash command or minimap button is **never** auto-hidden; neither is an auto-opened one
+      the player has since dragged or clicked (mode/scope/New-session), nor one currently
+      under the mouse. Turning the **Auto-hide stats window** checkbox off disables all of
+      it — as does turning off **Pause session when not fishing** (auto-hide is part of the
+      pause feature; both nested controls gray out with it).
+
 ### Persistence & scope
 
-- [ ] Catch fish, `/reload` → lifetime totals survive; the session view resets.
+- [ ] Catch fish, `/reload` → lifetime totals survive; the session resumes (see *Sessions*
+      above for the boundary rules).
 - [ ] Catch on two characters → each character's data is separate, and the **account
       rollup equals their sum**.
 - [ ] Same-named characters on different realms stay distinct in the data.
 
 ### UI
 
-- [ ] The stats window toggles via the slash command **and** the minimap button.
+- [ ] The stats window toggles via the slash command **and** the addon-compartment entry
+      (the fishing-pole icon in the minimap's addon drawer): left-click toggles the window,
+      right-click opens options, and hovering the entry shows the tooltip with both hints.
+- [ ] On a fresh install the custom minimap button is **hidden**; enabling **Show minimap
+      button** shows it live. With it enabled, the button sits on the minimap ring — also
+      on an Edit-Mode-resized/rescaled minimap (and repositions when the minimap is resized
+      live) — toggles the window on left-click, opens options on right-click, and drags
+      around the ring. An existing SavedVariables with `showMinimap = true` keeps the
+      button after upgrading.
 - [ ] It drags and remembers its position across `/reload`.
 - [ ] The current zone/subzone is highlighted; session vs lifetime are both correct.
 - [ ] The Session view's **New session** button pops a confirmation dialog; **Yes** resets the
@@ -133,14 +171,20 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       checkboxes) and the donate/version footer.
 - [ ] Changing **Auto-cast** / **Show minimap button** takes effect immediately; the
       double-click delay slider is disabled unless a double-click cast mode is selected.
+- [ ] The **Sessions** block renders: the **Inactivity timeout** slider is disabled unless
+      an inactivity-based mode is selected in **Start a new session**; **Pause after** and
+      **Auto-hide stats window** are nested under **Pause session when not fishing** and
+      both gray out when it's unchecked. `/ft session manual|idle|zone|zoneidle` switches
+      the mode.
 - [ ] **Auto-open when fishing** = Full window / Collapsed view / Disabled does the right thing
       on the next cast (and only when the window isn't already up).
 - [ ] Unchecking **Include junk items** (or `/ft junk off`) hides gray catches from the list
       **and** the totals/zone chart immediately (no `/reload`); re-checking shows them again.
       A gray catch is still tracked while hidden (visible again when re-enabled), and the count
       stays correct.
-- [ ] The native **Defaults** button resets every option (minimap shows, cast mode reverts,
-      auto-open returns to Full window, junk items shown, Auctionator prices on).
+- [ ] The native **Defaults** button resets every option (minimap button hides, cast mode
+      reverts, auto-open returns to Full window, junk items shown, Auctionator prices on,
+      sessions back to After inactivity / 30m / pause on / 5m / auto-hide on).
 
 ### Auctionator price overlay (on by default)
 

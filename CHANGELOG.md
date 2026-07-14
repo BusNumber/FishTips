@@ -5,7 +5,35 @@ All notable changes to Fish & Tips are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.0] - 2026-07-10
+## [1.2.0] - 2026-07-14
+
+### Added
+
+- **Auto-start new sessions.** A new **Start a new session** option picks when your 
+  next cast begins a fresh session: **after inactivity** (30 minutes by default, adjustable),
+  **when the zone changes**, **both together** (so an AFK break at the same spot keeps 
+  your session), or **manually only**. A finished session stays on screen until you actually 
+  fish again, and ends with a one-line summary of its tally in chat.
+- **The fish/hour timer now pauses when you stop fishing.** Breaks between casts count
+  toward the session timer only up to a grace period (5 minutes, adjustable), so going
+  AFK no longer craters your rate, while flying around hunting the next pool still
+  counts. Turn **Pause session when not fishing** off for the old behavior. The clock 
+  now also starts at your first cast instead of at login.
+- **The session catch list now shows your whole outing.** Hop between pools across zones —
+  every catch of the session stays in the Session view's list, merged per fish, instead of
+  only what you caught at your current spot. (The Lifetime view still shows the current
+  location's history.)
+- **Sessions survive `/reload`.** A quick reload no longer wipes your session counts and
+  timer; a long break is treated by the same session rules as any other break.
+- **The auto-opened window now hides automatically.** If the stats window (or compact
+  strip) auto-opened when you started fishing, it tucks itself away a few minutes after you
+  stop — and returns on your next cast. A window you opened yourself stays until you close.
+  Toggle with **Auto-hide stats window** (it lives under the pause option above — no
+  pause, no auto-hide).
+- **Fish & Tips now lives in the minimap's addon compartment.** Left-click the entry for
+  the stats window, right-click for options.
+
+## [1.1.0] - 2026-07-12
 
 ### Added
 
@@ -57,5 +85,6 @@ Initial public release. For **Midnight, patch 12.0.7** (retail).
 - **Movable stats window** with a Session/Lifetime toggle and a character/Warband scope selector,
   and a **compact strip**.
 
+[1.2.0]: https://github.com/BusNumber/FishTips/releases/tag/v1.2.0
 [1.1.0]: https://github.com/BusNumber/FishTips/releases/tag/v1.1.0
 [1.0.0]: https://github.com/BusNumber/FishTips/releases/tag/v1.0.0

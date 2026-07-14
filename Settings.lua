@@ -14,11 +14,16 @@ local DEFAULTS = {
   theme = "blend",          -- locked to "blend"; engine kept for future custom themes
   statMode = "session",     -- "session" | "lifetime"
   scope = nil,              -- last selected scope key; nil => current character
-  showMinimap = true,
+  showMinimap = false,      -- opt-in; the Addon Compartment entry is the default access path
   minimapAngle = 200,       -- degrees around the ring
   castMode = "off",         -- cast trigger: "off" | "doubleclick" | "key" | "both"
   castDelay = 0.3,          -- double-click window (seconds)
   autoLoot = true,          -- auto-loot a fishing catch (read live by Core's loot handler)
+  sessionEnd = "idle",      -- when a NEW session starts: "manual" | "idle" | "zone" | "zoneidle"
+  sessionIdleMinutes = 30,  -- inactivity threshold (minutes since last cast) for idle/zoneidle
+  sessionPause = true,      -- session clock counts inter-cast gaps only up to the grace below
+  sessionGraceMinutes = 5,  -- per-gap cap on counted time; also the auto-hide delay
+  autoHide = true,          -- hide an AUTO-OPENED surface when the session pauses
   includeJunk = true,       -- show gray (quality-0) catches in the stats window + totals
   auctionatorPrices = true, -- show session gold values from Auctionator (only renders if it's installed)
   priceDetail = "gold",     -- price precision: "gold" | "goldsilver" | "all" (picker deferred; pinned to gold)
@@ -59,6 +64,18 @@ local function applyDefaults(s)
   end
   if type(s.castDelay) ~= "number" or s.castDelay < 0.1 then s.castDelay = 0.1
   elseif s.castDelay > 1.0 then s.castDelay = 1.0 end
+  if s.sessionEnd ~= "manual" and s.sessionEnd ~= "idle"
+     and s.sessionEnd ~= "zone" and s.sessionEnd ~= "zoneidle" then
+    s.sessionEnd = DEFAULTS.sessionEnd
+  end
+  if type(s.sessionIdleMinutes) ~= "number" then s.sessionIdleMinutes = DEFAULTS.sessionIdleMinutes end
+  if s.sessionIdleMinutes < 5 then s.sessionIdleMinutes = 5
+  elseif s.sessionIdleMinutes > 120 then s.sessionIdleMinutes = 120 end
+  if type(s.sessionGraceMinutes) ~= "number" then s.sessionGraceMinutes = DEFAULTS.sessionGraceMinutes end
+  if s.sessionGraceMinutes < 1 then s.sessionGraceMinutes = 1
+  elseif s.sessionGraceMinutes > 15 then s.sessionGraceMinutes = 15 end
+  if type(s.sessionPause) ~= "boolean" then s.sessionPause = DEFAULTS.sessionPause end
+  if type(s.autoHide) ~= "boolean" then s.autoHide = DEFAULTS.autoHide end
   if type(s.includeJunk) ~= "boolean" then s.includeJunk = DEFAULTS.includeJunk end
   if type(s.auctionatorPrices) ~= "boolean" then s.auctionatorPrices = DEFAULTS.auctionatorPrices end
   -- The precision picker isn't shipped yet (its options control is hidden), so pin everyone to
@@ -111,6 +128,15 @@ local function AutoOpenOptions()
   return c:GetData()
 end
 
+local function SessionEndOptions()
+  local c = Settings.CreateControlTextContainer()
+  c:Add("idle",     L["After inactivity"])
+  c:Add("zone",     L["When the zone changes"])
+  c:Add("zoneidle", L["Zone change + inactivity"])
+  c:Add("manual",   L["Manually only"])
+  return c:GetData()
+end
+
 -- defined via the forward-declared local so ns.InitSettings (above) can call it.
 function RegisterPanel()
   if categoryID or not (Settings and Settings.RegisterVerticalLayoutCategory) then return end
@@ -150,12 +176,50 @@ function RegisterPanel()
   Settings.CreateCheckbox(category, Register("autoLoot", L["Auto-loot catches"]),
     L["Automatically loot everything from a catch. Only applies to fishing loot."])
 
+  -- Sessions ------------------------------------------------------------------------------
+  -- Session boundaries and the clock are judged live in Core (lazily, at the next cast),
+  -- so none of these need side-effect callbacks beyond a repaint where the display shifts.
+  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Sessions"]))
+  local sessEndInit = Settings.CreateDropdown(category, Register("sessionEnd", L["Start a new session"]),
+    SessionEndOptions,
+    L["When your next cast begins a fresh session. The finished session stays on screen until you fish again."])
+  local idleOptions = Settings.CreateSliderOptions(5, 120, 5)
+  idleOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right,
+    function(value) return string.format("%dm", value) end)
+  local idleInit = Settings.CreateSlider(category, Register("sessionIdleMinutes", L["Inactivity timeout"]),
+    idleOptions, L["How long since your last cast counts as inactivity."])
+  -- Only meaningful for the inactivity-based modes; gray it out otherwise.
+  idleInit:SetParentInitializer(sessEndInit, function()
+    return settings.sessionEnd == "idle" or settings.sessionEnd == "zoneidle"
+  end)
+  local pauseInit = Settings.CreateCheckbox(category, Register("sessionPause", L["Pause session when not fishing"]),
+    L["Keeps the fish/hour rate honest: each break between casts counts toward the session timer only up to the pause delay below."])
+  Settings.SetOnValueChangedCallback(addonName .. "_sessionPause", function()
+    if ns.FireRefresh then ns.FireRefresh() end
+  end)
+  -- Both the delay and auto-hide nest under the pause checkbox: with the pause off there
+  -- is no pause moment, so auto-hide is genuinely inert (the UI subscriber checks
+  -- sessionPause too) and the gray-out tells the truth.
+  local graceOptions = Settings.CreateSliderOptions(1, 15, 1)
+  graceOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right,
+    function(value) return string.format("%dm", value) end)
+  local graceInit = Settings.CreateSlider(category, Register("sessionGraceMinutes", L["Pause after"]),
+    graceOptions,
+    L["Minutes after your last cast before the session counts as paused. Caps how much of each break the timer counts, and delays the auto-hide below."])
+  graceInit:SetParentInitializer(pauseInit, function() return settings.sessionPause end)
+  Settings.SetOnValueChangedCallback(addonName .. "_sessionGraceMinutes", function()
+    if ns.FireRefresh then ns.FireRefresh() end
+  end)
+  local autoHideInit = Settings.CreateCheckbox(category, Register("autoHide", L["Auto-hide stats window"]),
+    L["Tucks away the auto-opened stats window (or compact strip) once the session pauses; it returns on your next cast. A window you opened yourself is never hidden."])
+  autoHideInit:SetParentInitializer(pauseInit, function() return settings.sessionPause end)
+
   -- Stats window --------------------------------------------------------------------------
   layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Stats window"]))
   Settings.CreateDropdown(category, Register("autoOpen", L["Auto-open when fishing"]), AutoOpenOptions,
     L["What to show when you start fishing: nothing, the full stats window, or the compact strip. Only acts when the window isn't already open."])
   Settings.CreateCheckbox(category, Register("showMinimap", L["Show minimap button"]),
-    L["Show the Fish & Tips button on the minimap."])
+    L["Show the Fish & Tips button on the minimap. Either way, the addon stays reachable from the minimap's addon compartment."])
   Settings.SetOnValueChangedCallback(addonName .. "_showMinimap", function()
     if ns.UI and ns.UI.SetMinimapShown then ns.UI.SetMinimapShown(settings.showMinimap) end
   end)
@@ -230,6 +294,13 @@ SlashCmdList["FISHTIPS"] = function(msg)
     else
       say("cast: off | doubleclick | key | both")
     end
+  elseif cmd == "session" then
+    if rest == "manual" or rest == "idle" or rest == "zone" or rest == "zoneidle" then
+      settings.sessionEnd = rest
+      say((L["new sessions start: %s."]):format(rest))
+    else
+      say("session: manual | idle | zone | zoneidle  (currently " .. (settings.sessionEnd or "idle") .. ")")
+    end
   elseif cmd == "autoloot" then
     if rest == "on" or rest == "off" then
       settings.autoLoot = (rest == "on")
@@ -266,6 +337,6 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if ns.SetDemo then ns.SetDemo(on) end
     say("demo data " .. (on and "on." or "off."))
   else
-    say("commands: /ft  (toggle)  |  config  |  cast off|doubleclick|key|both  |  autoloot on|off  |  junk on|off  |  auc on|off  |  demo on|off")
+    say("commands: /ft  (toggle)  |  config  |  cast off|doubleclick|key|both  |  session manual|idle|zone|zoneidle  |  autoloot on|off  |  junk on|off  |  auc on|off  |  demo on|off")
   end
 end

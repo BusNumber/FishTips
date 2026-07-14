@@ -369,6 +369,177 @@ test("autoloot_setting_off_still_records", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- Session semantics (lazy end-at-next-cast, active-time clock, reload persistence,
+-- whole-session list, pause notifier)
+-- ---------------------------------------------------------------------------
+
+local function cast(S) S.fire("UNIT_SPELLCAST_CHANNEL_START", "player", nil, 131476) end
+local function stopChannel(S) S.fire("UNIT_SPELLCAST_CHANNEL_STOP", "player", nil, 131476) end
+local function catchFish(S, itemID, qty, quality)
+  S.setLoot({ { itemID = itemID, quantity = qty or 1, quality = quality or 1 } })
+  S.fire("LOOT_READY", false)
+  S.fire("LOOT_CLOSED")
+end
+
+test("elapsed_zero_before_first_cast_and_caps_gaps", function()
+  local ns, S = loadAddon({})
+  assertEq(ns.SessionElapsed(), 0, "no clock before the first cast")
+  cast(S)
+  assertEq(ns.SessionElapsed(), 0, "clock starts at zero on the first cast")
+  S.advance(120)  -- 2 min between casts: under the 5-min grace -> counts in full
+  assertEq(ns.SessionElapsed(), 120, "short live tail counts in full")
+  cast(S)
+  assertEq(ns.SessionElapsed(), 120, "short gap accumulated in full")
+  S.advance(1200)  -- 20 min idle: tail freezes at the grace
+  assertEq(ns.SessionElapsed(), 120 + 300, "live tail capped at the grace")
+  cast(S)
+  assertEq(ns.SessionElapsed(), 120 + 300, "long gap accumulated capped, no jump")
+  ns.GetSettings().sessionPause = false  -- wall-clock mode: gaps count uncapped
+  S.advance(1200)
+  assertEq(ns.SessionElapsed(), 120 + 300 + 1200, "pause off = wall clock")
+end)
+
+test("idle_end_starts_new_session_at_next_cast", function()
+  local ns, S = loadAddon({})
+  local key = ns.CharKey()
+  cast(S)
+  catchFish(S, 111, 2)
+  S.advance(29 * 60)
+  cast(S)
+  assertEq(ns.GetTotals(key, "session").casts, 2, "29-min gap continues the session")
+  assertEq(ns.GetTotals(key, "session").catches, 2)
+  S.advance(31 * 60)
+  cast(S)
+  assertEq(ns.GetTotals(key, "session").casts, 1, "31-min gap starts a new session")
+  assertEq(ns.GetTotals(key, "session").catches, 0, "old catches left with the old session")
+  assertEq(ns.GetTotals(key, "lifetime").catches, 2, "lifetime intact")
+  assertEq(ns.GetTotals(key, "lifetime").casts, 3, "lifetime casts intact")
+  local summaries = 0
+  for _, line in ipairs(S.printed) do
+    if line:find("session ended", 1, true) then summaries = summaries + 1 end
+  end
+  assertEq(summaries, 1, "exactly one auto-end summary printed")
+end)
+
+test("zone_end_mode", function()
+  local ns, S = loadAddon({})
+  ns.GetSettings().sessionEnd = "zone"
+  local key = ns.CharKey()
+  cast(S)
+  cast(S)
+  assertEq(ns.GetTotals(key, "session").casts, 2, "same zone continues")
+  S.zone = "Zone2"
+  cast(S)
+  assertEq(ns.GetTotals(key, "session").casts, 1, "zone change starts a new session")
+end)
+
+test("zoneidle_requires_both", function()
+  local ns, S = loadAddon({})
+  ns.GetSettings().sessionEnd = "zoneidle"
+  local key = ns.CharKey()
+  cast(S)
+  S.zone = "Zone2"
+  cast(S)
+  assertEq(ns.GetTotals(key, "session").casts, 2, "zone change alone continues")
+  S.advance(31 * 60)
+  cast(S)
+  assertEq(ns.GetTotals(key, "session").casts, 3, "idle alone continues")
+  S.advance(31 * 60)
+  S.zone = "Zone3"
+  cast(S)
+  assertEq(ns.GetTotals(key, "session").casts, 1, "zone change + idle together end it")
+end)
+
+test("manual_mode_never_auto_ends", function()
+  local ns, S = loadAddon({})
+  ns.GetSettings().sessionEnd = "manual"
+  local key = ns.CharKey()
+  cast(S)
+  S.advance(10 * 3600)
+  S.zone = "Zone9"
+  cast(S)
+  assertEq(ns.GetTotals(key, "session").casts, 2, "manual mode survives any gap + zone change")
+  ns.ResetSession()
+  assertEq(ns.GetTotals(key, "session").casts, 0, "the manual button still resets")
+end)
+
+test("session_items_merge_across_zones", function()
+  local ns, S = loadAddon({})
+  local key = ns.CharKey()
+  cast(S)
+  S.setLoot({
+    { itemID = 111, quantity = 2, quality = 1 },
+    { itemID = 999, quantity = 1, quality = 0 },
+  })
+  S.fire("LOOT_READY", false)
+  S.fire("LOOT_CLOSED")
+  S.zone = "Zone2"; S.sub = "SubB"
+  cast(S)  -- small gap, default idle mode -> same session across the zone line
+  catchFish(S, 111, 3)
+  local items = ns.GetSessionItems(key)
+  assertEq(#items, 2, "whole-session list spans both zones")
+  assertEq(items[1].itemID, 111, "count-desc order")
+  assertEq(items[1].count, 5, "same fish merged across zones")
+  ns.GetSettings().includeJunk = false
+  items = ns.GetSessionItems(key)
+  assertEq(#items, 1, "junk filter honored by the session list")
+  assertEq(items[1].itemID, 111)
+end)
+
+test("session_survives_reload", function()
+  local ns, S = loadAddon({})
+  local key = ns.CharKey()
+  cast(S)
+  S.setLoot({ { itemID = 111, quantity = 2 } })
+  S.fire("LOOT_READY", false)
+  local db = _G.FishTipsDB
+  local epoch = S.epoch
+  -- "Reload" 3 minutes later: a fresh world on the SAME SavedVariables table.
+  local ns2 = loadAddon({ db = db, setup = function(st) st.epoch = epoch + 180 end })
+  assertEq(ns2.GetTotals(key, "session").catches, 2, "session restored across reload")
+  assertEq(ns2.GetTotals(key, "session").casts, 1, "casts restored")
+  assertEq(ns2.SessionElapsed(), 180, "elapsed keeps running on the epoch tail (no dip)")
+  -- A 31-minute gap instead: the idle rule judges the reload gap at restore time.
+  local ns3 = loadAddon({ db = db, setup = function(st) st.epoch = epoch + 31 * 60 end })
+  assertEq(ns3.GetTotals(key, "session").catches, 0, "idle rule ends the session at login")
+  assertEq(_G.FishTipsDB.chars[key].session, nil, "stale snapshot dropped from the DB")
+end)
+
+test("malformed_snapshot_discarded", function()
+  local key = "Tester-TestRealm"  -- matches the stub identity => the current character
+  local ns, S = loadAddon({ db = { version = 1, chars = {
+    [key] = { lifetime = { casts = 1, zones = {} }, session = "garbage" },
+  } } })
+  assertEq(ns.GetTotals(key, "session").catches, 0, "no session restored from garbage")
+  assertEq(_G.FishTipsDB.chars[key].session, nil, "malformed snapshot discarded")
+  cast(S)
+  assertEq(ns.GetTotals(key, "session").casts, 1, "a fresh session still works")
+end)
+
+test("pause_notifier_fires_once_then_cancels_on_recast", function()
+  local ns, S = loadAddon({})
+  local fired = 0
+  ns.RegisterSessionPause(function() fired = fired + 1 end)
+  cast(S)
+  S.advance(20)
+  stopChannel(S)
+  S.advance(600)  -- past lastCast + 5-min grace
+  assertEq(fired, 1, "fires once when the grace elapses")
+  S.advance(600)
+  assertEq(fired, 1, "never re-fires while idle")
+  cast(S)
+  S.advance(20)
+  stopChannel(S)
+  cast(S)          -- recast before the grace elapses
+  S.advance(600)   -- the superseded timer comes due -> must no-op
+  assertEq(fired, 1, "a new cast cancels the pending pause")
+  S.advance(20)
+  stopChannel(S)
+  S.advance(600)
+  assertEq(fired, 2, "the pause fires again after the next stop")
+end)
+
+-- ---------------------------------------------------------------------------
 -- Runner
 -- ---------------------------------------------------------------------------
 local failed = 0

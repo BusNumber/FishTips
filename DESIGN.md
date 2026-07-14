@@ -13,9 +13,14 @@ doc — if you're about to change behavior, check here first.
 > the **double-right-click cast**, **cast counting**, **loot-driven catch recording**
 > (LOOT_READY-first, once per window, gated to fishing, keyed by itemID), **auto-opening
 > the window when fishing starts**, **fishing-only auto-loot** — the loot reader calls
-> `LootSlot()` to grab the catch (gated by the `autoLoot` setting, default on) — and an
+> `LootSlot()` to grab the catch (gated by the `autoLoot` setting, default on) — an
 > **Auctionator price overlay** (session gold values, on by default but only rendering when
-> Auctionator is installed). A **LuaJIT test harness** (`tests/`, run in CI) asserts the
+> Auctionator is installed), and **smart sessions** (configurable auto-end judged lazily at
+> the next cast, an active-time clock that pauses during breaks, a whole-session catch
+> list, `/reload` persistence, auto-hide for auto-opened windows — see *What it does* §5),
+> and an **Addon Compartment entry** (the default access path; the custom minimap button
+> is now opt-in, default off — see the API notes).
+> A **LuaJIT test harness** (`tests/`, run in CI) asserts the
 > data-layer invariants out of game. Still roadmap: **junk auto-discard** (auto-selling or
 > throwing back gray catches — see Deferred/roadmap).
 
@@ -67,8 +72,10 @@ key, or a brief `BUTTON2` override armed by the second of two quick right-clicks
 Every catch is logged by **zone + subzone**, with **current-session** and **lifetime**
 totals, **per character** plus an **account-wide rollup** (surfaced in the UI as
 **"Warband"**, the retail term). Casts are counted too (from the fishing spell events),
-giving a fish/hour rate. A movable stats window — toggled by a slash command and a minimap
-button — shows the breakdown, with the current zone/subzone highlighted.
+giving a fish/hour rate. A movable stats window — toggled by a slash command, the
+minimap's **addon compartment** entry, or an opt-in minimap button (`showMinimap`,
+default off; the compartment is the default access path) — shows the breakdown, with the
+current zone/subzone highlighted.
 
 Display decisions (presentation only — they don't change the data): the window has a
 **Session / Lifetime** toggle, and the **character / Warband scope selector appears only in
@@ -77,9 +84,12 @@ scope. The converse control, a **"New session" reset button, appears only in the
 view** (it pops a `StaticPopup` confirmation — guarding against an accidental wipe — that on
 accept calls `ns.ResetSession`). Each catch row shows the **rarity-colored item name**
 (poor-quality junk is dimmed well below the normal-item text so it visibly recedes), a thin
-**frequency bar**, the **count**, and the count's **share %** of that location's catches. A
+**frequency bar**, the **count**, and the count's **share %** of the list's catches. The
+catch list's scope differs by view: **Session lists the whole session** — everything caught
+this session, merged across locations, so a pool-hunter's list doesn't empty out when they
+fly to the next pool — while **Lifetime filters to the current zone/subzone**. A
 **location header** names the current zone/subzone (catch counts are carried by the
-per-location list and the **footer stat bar** — `casts · catches · /hr · minutes` — so the
+catch list and the **footer stat bar** — `casts · catches · /hr · minutes` — so the
 header itself stays uncluttered).
 
 The **`includeJunk`** account-wide setting (default on) decides whether gray (quality-0)
@@ -144,6 +154,57 @@ changes. All Auctionator access lives in the data layer behind the `ns.Pricing*`
 seams; the UI never calls Auctionator directly. (Integration mechanics are in the WoW API
 notes.)
 
+### 5. Sessions that end themselves (and a clock that pauses)
+
+A "session" is not login-to-logout. Three behaviors, all account-wide settings, all
+additive (`== nil` default-filled and sanitized — **no `DB_VERSION` bump**):
+
+- **Auto-end (`sessionEnd`, default `"idle"`).** When does the next cast begin a *new*
+  session? `manual` (never — only the "New session" button), `idle` (more than
+  `sessionIdleMinutes` — default 30 — since the last cast), `zone` (the zone changed since
+  the last cast), or `zoneidle` (**both** — so an AFK return to the same spot continues).
+  **Boundaries are judged lazily, at the next cast** — never by a running timer or a zone
+  event — so a finished session stays readable on screen until fishing actually resumes,
+  and no plumbing watches the clock or the map. When a session ends itself (and it had
+  catches), one chat line summarizes its final tally; the manual button prints nothing
+  (the player asked for it).
+- **The active-time clock (`sessionPause` default on, `sessionGraceMinutes` default 5).**
+  Session time is an *accumulator*, not a start timestamp: each between-cast gap counts
+  toward elapsed only up to the grace (`activeTime += min(gap, grace)`; the live tail since
+  the last cast is capped the same way, so the footer clock visibly freezes at
+  `activeTime + grace` while idle). A pool-hunter's 2–3-minute flight between pools counts
+  in full — search time is fishing time — while a dinner break adds at most the grace, so
+  fish/hour stays honest for both playstyles. Turning the pause off restores wall-clock
+  counting (the cap becomes infinite). Elapsed is zero before the first cast: the clock
+  starts when fishing does, not at login.
+- **`/reload` persistence.** The live session struct is linked by reference into the DB as
+  a **disposable snapshot** (`db.chars[key].session` — see *DB schema*), so it serializes
+  at logout/reload with no explicit save step. At login it is sanitized and restored, and
+  the reload gap is judged by the same end rules: the idle half right at restore (a
+  week-old session doesn't greet the player at login), the zone half at the next cast
+  (the current zone isn't reliable at login). Under `manual`, a session deliberately
+  survives `/reload` — and even a logout — until the button resets it; that is the
+  coherent reading of "manual".
+
+And the symmetric half of auto-open — **auto-hide (`autoHide`, default on).** When the
+session *pauses* (the grace elapses after the last cast), a surface that **auto-open showed
+and the player never touched** tucks itself away; the next cast brings it back via
+auto-open. The exemption is what makes default-on safe: a manually-opened window is never
+hidden, and any interaction with an auto-opened surface (a drag, any control click)
+promotes it to player-owned (`UI.autoShown` is cleared). A surface under the mouse is
+skipped — it's in use; the next fishing stop re-arms the pause — and `uiShown` is never
+persisted, exactly like auto-open. This is the **one deliberate timer** in the session
+model (a pause must *act* at a moment; every boundary is judged lazily): Core arms
+`C_Timer.After` at `UNIT_SPELLCAST_CHANNEL_STOP` for the remainder of `lastCast + grace`,
+cancels it via a generation token at the next cast (`C_Timer.After` has no cancel handle),
+and fires the `ns.RegisterSessionPause` notifier the UI subscribes to. The notifier itself
+keys off `sessionGraceMinutes` and fires regardless of the `sessionPause` checkbox (Core
+stays a generic seam — the checkbox governs the elapsed-time arithmetic), but the UI's
+auto-hide subscriber acts only when **both** `autoHide` and `sessionPause` are on: in the
+options panel, **Auto-hide stats window** and **Pause after** are nested under **Pause
+session when not fishing** and gray out when it's unchecked — with the pause off there is
+no pause moment, so the gray-out must be truthful (no lying disabled states).
+
 ## Architecture
 
 ```
@@ -161,7 +222,8 @@ tokens and token-list help, dev-only output (/ft demo, /ft castdebug), texture p
 
 ### Core.lua
 Data layer: SavedVariables DB + fishing-state detection + loot read/auto-loot +
-zone resolution + the catch store + account rollup. Owns the `ns.Get*` seams.
+zone resolution + the catch store + session semantics (boundaries, the active-time
+clock, the pause notifier) + account rollup. Owns the `ns.Get*` seams.
 
 ### Casting.lua
 The cast triggers. The cast is a protected action and is driven through the **secure binding
@@ -203,8 +265,10 @@ disturbs the persistent one. All binding changes happen out of combat (login, dr
 ### UI.lua
 Presentation: the movable stats window (Session/Lifetime + a Session-only "New session"
 reset, a location header, per-location catch list, top-zones chart, footer stat bar), a
-**compact minimized strip**, a custom minimap
-button, and a small **theme engine** — a registry of palettes + body layouts applied by
+**compact minimized strip**, the **Addon Compartment handlers** (the drawer entry is the
+default access path — see the API notes), a custom minimap button (opt-in, default off;
+its ring radius derives from the live minimap size and re-places on `OnSizeChanged`),
+and a small **theme engine** — a registry of palettes + body layouts applied by
 `ApplyTheme`. The theme engine is currently **locked to a single look** (no chooser is
 exposed) but kept in code for future customizable themes. Reads only via `ns.*` seams.
 
@@ -248,12 +312,15 @@ can't be broken by a render path):
 - `ns.GetTotals(scope, mode)` → `{ casts, catches, ratePerHour, elapsed }` (`mode` = `"session"` | `"lifetime"`)
 - `ns.GetZoneTotals(scope, mode)` → catches-desc `{ {zone, catches}, … }`
 - `ns.GetLocationItems(scope, mode, zone, subZone)` → count-desc `{ {itemID, name, link, quality, count}, … }`
+- `ns.GetSessionItems(scope)` → the same row shape, but the **whole session** merged across
+  every zone/sub — the Session view's catch list (see *What it does* §2/§5)
 - `ns.GetSessionScope()` → the scope that owns the live session (the current character)
 
-The catch-counting seams (`GetTotals`, `GetZoneTotals`, `GetLocationItems`) apply the
-`includeJunk` display filter here, in one place: `sumItems` (shared by the totals and zone
-rollups) and `GetLocationItems` skip quality-0 items when `includeJunk` is off, so the list
-and every total stay consistent. Filtering lives in the data layer, not the UI.
+The catch-counting seams (`GetTotals`, `GetZoneTotals`, `GetLocationItems`,
+`GetSessionItems`) apply the `includeJunk` display filter here, in one place: `sumItems`
+(shared by the totals and zone rollups) and the item-list seams skip quality-0 items when
+`includeJunk` is off, so the list and every total stay consistent. Filtering lives in the
+data layer, not the UI.
 
 The optional Auctionator price overlay adds three read-only pricing seams (also data layer —
 the UI never touches Auctionator):
@@ -269,15 +336,22 @@ the UI never touches Auctionator):
 The tracking write-path (see the WoW API notes) feeds the same store these seams read:
 
 - `ns.RecordCast()` — increment the cast counter (lifetime + session) for the current char.
+  Also the **session-boundary judge**: before counting, it applies the `sessionEnd` rule to
+  the gap/zone since the previous cast (*What it does* §5) and starts a fresh session when
+  the rule says so, then accumulates the capped gap into the active-time clock.
 - `ns.RecordCatch(itemID, count, name, quality, link)` — record one fished item, keyed by
   itemID, tagged with the current real zone/subzone (and their raw mapID — see *DB
   schema*), into both lifetime and session.
-- `ns.ResetSession()` — drop the current character's in-memory session store and restart the
-  elapsed clock (the Session "New session" button). The persisted lifetime history is never
-  touched; fires a refresh.
+- `ns.ResetSession()` — drop the current character's session store, in memory and its
+  persisted snapshot (the Session "New session" button); the elapsed clock reads zero until
+  the next cast. The persisted lifetime history is never touched; fires a refresh.
 - `ns.RegisterFishingStart(fn)` / `ns.FireFishingStart()` — a notifier (parallel to
   `RegisterRefresh`/`FireRefresh`) the UI subscribes to so it can **auto-open** the window
   when fishing begins. `FireRefresh` only repaints an already-open window; this can show it.
+- `ns.RegisterSessionPause(fn)` / `ns.FireSessionPause()` — the converse notifier: fired
+  once when the session goes idle (the pause grace elapses after the last cast with no new
+  one). The UI subscribes to **auto-hide** an auto-opened surface; this must be able to
+  *hide* one, which `FireRefresh` can't.
 
 The loot reader does both jobs from one handler registered for `LOOT_READY` **and**
 `LOOT_OPENED` (whichever fires first wins, via a per-window guard cleared at `LOOT_CLOSED`;
@@ -312,6 +386,9 @@ FishTipsDB = {
           },
         },
       },
+      session = { ... },              -- DISPOSABLE live-session snapshot (see below):
+                                      -- casts/zones like lifetime, plus activeTime,
+                                      -- lastCastEpoch, lastCastZone
     },
   },
 }
@@ -320,8 +397,20 @@ FishTipsDB = {
 - **Per-character data is persisted; the account-wide rollup is derived at display time**
   in the data layer, so the invariant *account total = sum of characters* can't be broken
   by a rendering path.
-- **Lifetime** counts persist; **session** counts live in memory only and reset on
-  login/`/reload`.
+- **Lifetime** counts persist; **session** counts live in memory, linked by reference into
+  the DB as a snapshot that survives `/reload` (and logout) until the session-end rules
+  retire it — see the `session` bullet below.
+- **`session` (per char, additive — no `DB_VERSION` bump):** the live session struct.
+  Because it's the *same table* the in-memory store uses, it serializes at logout/reload
+  with no explicit save step. Shape: `casts`/`zones` exactly like `lifetime`, plus
+  `activeTime` (accumulated counted seconds), `lastCastEpoch` (`time()` at the last cast —
+  the only timestamp that crosses a reload; the uptime-based `lastCastAt` lives only in
+  memory and is dropped at restore), and `lastCastZone`. This is **disposable** data — the
+  opposite policy from the catch history: restore sanitizes the shape, discards anything
+  malformed, and applies the idle end-rule to the epoch gap; a future shape change may
+  simply discard old snapshots, never migrate them. Other characters' stale snapshots are
+  ignored (only the current character's is loaded into the live store), so the
+  account-session rollup still sees exactly one live session.
 - `name`/`quality`/`link` are stored with the first record of an item (and backfilled if an
   earlier record lacked them) so display never has to re-scan; if a name is still missing
   at render time, it is parsed from the stored `link`.
@@ -439,6 +528,19 @@ awaiting in-game confirmation are flagged inline.
 - **Cast mode + delay.** `castMode` (`off` default / `doubleclick` / `key` / `both`) selects the
   trigger path(s); `castDelay` (default 0.3s) is the double-click window. Both are account-wide
   settings (no `DB_VERSION` bump); the panel exposes a dropdown + slider.
+- **Addon Compartment.** *Implemented — the default access path.* The TOC's
+  `## AddonCompartmentFunc` / `...FuncOnEnter` / `...FuncOnLeave` directives name **global**
+  functions (defined in UI.lua) that Blizzard resolves at load; registration is **static and
+  always on** — there is no per-addon runtime toggle, the drawer appears once any installed
+  addon registers an entry, and its visibility is a player-side Blizzard setting. The entry's
+  icon comes from the existing `## IconTexture`. Since 11.0 the handlers receive
+  `(addonName, buttonName)` with **no menu-button frame**, so the tooltip anchors defensively
+  (a passed region if one arrives, else the global `AddonCompartmentFrame`, else skipped).
+  Click mirrors the minimap button: left → toggle the window, right → options. Because the
+  compartment covers reachability, the custom minimap button is **opt-in** (`showMinimap`
+  default off — flipped for fresh installs only; `applyDefaults` fills `== nil`, so an
+  existing user's stored `true` keeps their button). (Exact 12.0.x compartment behavior —
+  arg shapes, right-click delivery, tooltip anchor — awaits the in-game pass.)
 - **Zone resolution.** `GetRealZoneText()` / `GetSubZoneText()` for names, plus
   `C_Map.GetBestMapForUnit("player")` for a stable mapID — stamped on the zone and sub
   buckets at write time (see *DB schema*). **Log by the loot event, not by
@@ -473,10 +575,18 @@ awaiting in-game confirmation are flagged inline.
   (do nothing), `"full"` (the stats window), or `"collapsed"` (the compact strip). It only
   acts when nothing is already up (so it never fights a surface the player is using) and aligns
   the collapsed form to the chosen mode via `SetCollapsed`. It is transient — it never persists
-  `uiShown`, so an auto-open can't overwrite the player's manual show/hide preference, and there
-  is no auto-close (the surface stays until the player closes it). `autoOpen` is an account-wide
+  `uiShown`, so an auto-open can't overwrite the player's manual show/hide preference. Its
+  symmetric half is **auto-hide** (`autoHide`, default on): when the session pauses, a surface
+  that auto-open showed *and the player never touched* hides itself again — full mechanics and
+  guards in *What it does* §5. `autoOpen` is an account-wide
   setting (no `DB_VERSION` bump); the panel exposes it as a dropdown, and the old boolean
   `autoOpenOnFishing` is migrated to it (`true`→`"full"`, `false`→`"off"`) at load.
+- **Two clocks.** `GetTime()` is an uptime clock — it does not survive `/reload` — while
+  `time()` is wall-clock epoch. The session model stamps both at every cast: live math runs
+  on `GetTime`, and only `lastCastEpoch` crosses a reload (restore drops `lastCastAt`).
+  Related: `C_Timer.After` has no cancel handle, so the session-pause timer "cancels" via a
+  generation token the next cast bumps (an in-flight callback sees the stale token and
+  no-ops).
 
 ## Deferred / roadmap
 
@@ -503,6 +613,10 @@ These plug in behind the existing seams without changing the UI layer:
   (`C_EquipmentSet`, out of combat), enhanced/forced sound while fishing, and rare-catch
   alerts. (Gold/AH value: the **session price overlay shipped** — see *What it does* §4;
   per-zone gold/hour and lifetime gold analytics remain future work on top of it.)
+- **Session history** — auto-end (§5) discards a closed session once fishing resumes; only
+  the one-line chat summary survives. A "recent sessions" view (per-session tally, where,
+  when) would plug in behind the seams by retaining the last N closed session structs in
+  the disposable snapshot slot — same disposable-data policy, no migration burden.
 - **Customizable themes** — the UI already carries a theme engine (palettes + body layouts)
   scaffolded behind `ApplyTheme`, currently locked to one look with no user-facing chooser.
   Exposing theme selection (and/or per-element color options) plugs in here without touching
