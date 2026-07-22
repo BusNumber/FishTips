@@ -130,6 +130,13 @@ test("include_junk_filter_consistent", function()
   assertEq(#ns.GetLocationItems(key, "lifetime", "Zone1", "SubA"), 2)
 end)
 
+test("list_icons_setting_sanitized", function()
+  local ns = loadAddon({ db = { version = 1, chars = {}, settings = { listIcons = "garbage" } } })
+  assertEq(ns.GetSettings().listIcons, true, "type garbage falls back to the default")
+  local ns2 = loadAddon({ db = { version = 1, chars = {}, settings = { listIcons = false } } })
+  assertEq(ns2.GetSettings().listIcons, false, "persisted false survives the == nil fill")
+end)
+
 test("migrate_stamps_fresh_db", function()
   local ns = loadAddon({})
   assertEq(_G.FishTipsDB.version, 1, "DB version stamped")
@@ -238,6 +245,30 @@ test("records_at_loot_ready_alone", function()
   assertEq(ns.GetTotals(key, "session").catches, 5, "recorded at LOOT_READY")
   assertEq(S.lootSlotCalls, 2, "our pass looted every slot")
   assertEq(#S.lootSlots, 0, "reverse loop cleared the re-indexing list")
+end)
+
+test("item_rows_carry_link_for_ui", function()
+  -- The UI's tooltip/shift-click read row.link (nil tolerated -- demo/legacy records);
+  -- the icon reads row.itemID. Assert the seams carry the full row shape.
+  local ns, S = loadFishing({ db = { version = 1, chars = {
+    ["Tester-TestRealm"] = lifeWith(0, "Zone1", "SubA", {
+      [999] = { count = 3, quality = 1, name = "OldFish" },  -- pre-link-capture record
+    }),
+  } } })
+  local key = ns.CharKey()
+  S.setLoot({ { itemID = 111, name = "FishA", quantity = 2, quality = 3 } })
+  S.fire("LOOT_READY", false)
+  local rows = ns.GetLocationItems(key, "lifetime", "Zone1", "SubA")
+  local byId = {}
+  for _, r in ipairs(rows) do byId[r.itemID] = r end
+  assertEq(byId[111].link, "item:111", "live catches carry the stored link")
+  assertEq(byId[111].quality, 3, "quality survives the seam")
+  assertEq(byId[111].name, "FishA", "name survives the seam")
+  assertEq(byId[999].link, nil, "legacy record renders with no link")
+  assertEq(byId[999].name, "OldFish", "legacy record keeps its name")
+  local sess = ns.GetSessionItems(key)
+  assertEq(sess[1].itemID, 111)
+  assertEq(sess[1].link, "item:111", "session rows carry the link too")
 end)
 
 test("opened_fallback_when_ready_missing", function()

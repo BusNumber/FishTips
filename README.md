@@ -16,9 +16,12 @@ is worth at auction, live, while you fish.
   default; toggle it in options or with `/ft autoloot off`.
 - **Per-location catch tracking.** Every catch is logged by **zone + subzone**, with
   **current-session** and **lifetime** totals, **per character** plus an account-wide
-  rollup — and a casts/catch-per-hour readout. Gray junk catches can be hidden from the
-  stats with one toggle (shown by default — `/ft junk off` or the **Include junk items**
-  option); they keep being tracked either way.
+  rollup — and a casts/catch-per-hour readout. In the catch list, every fish shows its 
+  icon, hovering shows the item tooltip, shift-click links it in chat, and the mouse 
+  wheel scrolls the list. Gray junk catches can be hidden from the stats with one 
+  toggle (shown by default — `/ft junk off` or the **Include junk items** option); 
+  they keep being tracked either way. Prefer text-only rows? `/ft icons off` (or 
+  the **Show item icons** option) hides the icons.
 - **Fishing session management.** The session view shows everything you've caught this
   outing, **wherever** you caught it — hop between fishing pools across a whole zone (or
   three) and the list keeps up. The **fish/hour timer pauses** when you stop fishing, so an
@@ -40,9 +43,10 @@ you start fishing** — with your current spot highlighted:
 ```
 Fish & Tips — this session                  78 casts · 284 catches/hr
   Voidstorm — Oceanic Vortex   [special pool]
-    Voidscale Eel ............ 23 (32%)
-    Abyssal Pike ............. 18 (25%)
-    Stormfin Darter .......... 15 (21%)
+    🐟 Voidscale Eel ......... 23 (32%)
+    🐟 Abyssal Pike .......... 18 (25%)
+    🐟 Stormfin Darter ....... 15 (21%)
+    +4 more v
   78 casts  ·  23 catches  ·  284/hr  ·  15m
 ```
 

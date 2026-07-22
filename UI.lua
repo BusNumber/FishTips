@@ -127,24 +127,83 @@ local framePool = newPool(function() return CreateFrame("Frame", nil, UIParent) 
 local texPool   = newPool(function() return UIParent:CreateTexture(nil, "BACKGROUND") end)
 local fsPool    = newPool(function() return UIParent:CreateFontString(nil, "OVERLAY") end)
 
+-- Catch-list rows get their own Button pool: they are the only pooled widgets with mouse
+-- state, and the shared framePool must stay mouse-inert (bodyFrame resets no frame state,
+-- so EnableMouse/scripts on a shared frame would bleed into whatever role that frame
+-- plays next build). Handlers are installed ONCE here and read per-row fields (`it`,
+-- `onAction`), which bodyRow clears on every acquire.
+local rowPool = newPool(function()
+  local r = CreateFrame("Button", nil, UIParent)
+  r.hl = r:CreateTexture(nil, "HIGHLIGHT")
+  r.hl:SetColorTexture(1, 1, 1, 0.05)
+  r.hl:SetAllPoints()
+  -- Mouse-enabled rows would swallow the window's drag-anywhere; forward to its handlers.
+  r:RegisterForDrag("LeftButton")
+  r:SetScript("OnDragStart", function() local w = UI.window; w:GetScript("OnDragStart")(w) end)
+  r:SetScript("OnDragStop", function() local w = UI.window; w:GetScript("OnDragStop")(w) end)
+  r:SetScript("OnEnter", function(s)
+    if not s.it then return end  -- the "+N more" indicator row: highlight only
+    GameTooltip:SetOwner(s, "ANCHOR_RIGHT")
+    -- Demo/legacy rows may have no stored link; pcall guards a malformed link or an
+    -- itemID the client doesn't know (the demo's fake junk id).
+    if s.it.link then pcall(GameTooltip.SetHyperlink, GameTooltip, s.it.link)
+    elseif s.it.itemID then pcall(GameTooltip.SetItemByID, GameTooltip, s.it.itemID) end
+  end)
+  r:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  r:SetScript("OnClick", function(s)
+    markOwned()
+    if s.onAction then s.onAction()
+    elseif s.it and s.it.link then HandleModifiedItemClick(s.it.link) end
+  end)
+  -- Scrolling must keep working while the cursor is over a row: forward the wheel
+  -- to the window's handler.
+  r:EnableMouseWheel(true)
+  r:SetScript("OnMouseWheel", function(_, delta)
+    local w = UI.window
+    local h = w and w:GetScript("OnMouseWheel")
+    if h then h(w, delta) end
+  end)
+  return r
+end)
+
 local function releaseBodyWidgets()
-  framePool.ReleaseAll(); texPool.ReleaseAll(); fsPool.ReleaseAll()
+  framePool.ReleaseAll(); texPool.ReleaseAll(); fsPool.ReleaseAll(); rowPool.ReleaseAll()
 end
 
 -- Pooled acquire wrappers mirroring CreateFrame / MakeTex / MakeFS / MakeBorder for the
 -- body builders. Every acquire re-sets the state a previous use could have left behind:
--- draw layer + color for textures; font, color, JustifyH and auto-sizing for
--- fontstrings. The SetSize(0, 0) reset is load-bearing -- it restores auto-sizing after
+-- draw layer, texcoord, vertex color + color for textures (an icon use leaves a crop and
+-- possibly a junk dim behind); font, color, JustifyH and auto-sizing for fontstrings.
+-- The SetSize(0, 0) reset is load-bearing -- it restores auto-sizing after
 -- a width-constrained use (the zone chart's SetWidth would otherwise leak into a later
 -- auto-sized label).
 local function bodyFrame(parent)
   return framePool.Acquire(parent)
 end
 
+local function bodyRow(parent)
+  local r = rowPool.Acquire(parent)
+  r.it = nil
+  r.onAction = nil
+  return r
+end
+
 local function bodyTex(parent, c, layer)
   local t = texPool.Acquire(parent)
   t:SetDrawLayer(layer or "BACKGROUND")
+  t:SetTexCoord(0, 1, 0, 1)
+  t:SetVertexColor(1, 1, 1, 1)
   setTex(t, c)
+  return t
+end
+
+local function bodyIcon(parent, itemID, dim)
+  local t = texPool.Acquire(parent)
+  t:SetDrawLayer("ARTWORK")
+  t:SetTexCoord(0.07, 0.93, 0.07, 0.93)  -- trim the baked icon border
+  t:SetTexture(C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(itemID) or 134400)
+  local v = dim and 0.36 or 1  -- junk icons recede like junk names
+  t:SetVertexColor(v, v, v)
   return t
 end
 
@@ -334,19 +393,26 @@ local function gatherData()
 end
 
 -- ---------------------------------------------------------------------------
--- Item row (returns the new y cursor). Rarity-colored name (junk = quality 0 reads
--- gray via ITEM_QUALITY_COLORS), a thin frequency bar beneath, count on the right.
--- No left swatch/stripe -- rarity is conveyed by the name color.
+-- Item row (returns the new y cursor). A real item row: optional 16px icon, rarity-
+-- colored name (junk = quality 0 reads gray via ITEM_QUALITY_COLORS), a thin frequency
+-- bar beneath, count on the right. Hover tooltip / shift-click linking / drag and wheel
+-- forwarding live on the pooled Button (rowPool above), keyed off row.it.
 -- ---------------------------------------------------------------------------
-local function renderRow(body, p, it, y, maxCount, total, priced)
-  local row = bodyFrame(body)
+local function renderRow(body, p, it, y, maxCount, total, priced, icons)
+  local row = bodyRow(body)
   row:SetPoint("TOPLEFT", PAD, y); row:SetSize(INNER, 28)
+  row.it = it
+  local indent = icons and 20 or 0  -- 16px icon + 4px gap; 0 keeps the pre-icon layout
+  if icons then
+    local icon = bodyIcon(row, it.itemID, (it.quality or 1) == 0)
+    icon:SetPoint("TOPLEFT", 0, 0); icon:SetSize(16, 16)
+  end
   local qr, qg, qb = qcolor(it.quality)
   -- Junk (quality 0) reads close to white at the default poor-gray; push it well dimmer so
   -- it visibly recedes from the worthwhile catches.
   if (it.quality or 1) == 0 then qr, qg, qb = 0.36, 0.36, 0.36 end
   local name = bodyFS(row, 13, { qr, qg, qb })
-  name:SetPoint("TOPLEFT", 0, -1); name:SetPoint("RIGHT", -82, 0); name:SetJustifyH("LEFT")
+  name:SetPoint("TOPLEFT", indent, -1); name:SetPoint("RIGHT", -82, 0); name:SetJustifyH("LEFT")
   -- Optional Auctionator value of this catch (count * unit price), appended after the name.
   if priced then
     local unit = ns.GetItemPrice(it.itemID)
@@ -354,9 +420,9 @@ local function renderRow(body, p, it, y, maxCount, total, priced)
   else
     name:SetText(it.name)
   end
-  local trackW = INNER - 90
+  local trackW = INNER - 90 - indent
   local track = bodyTex(row, { 1, 1, 1, 0.07 }, "ARTWORK")
-  track:SetPoint("TOPLEFT", 0, -19); track:SetSize(trackW, 3)
+  track:SetPoint("TOPLEFT", indent, -19); track:SetSize(trackW, 3)
   local frac = maxCount > 0 and (it.count / maxCount) or 0
   local fill = bodyTex(row, { p.accent[1], p.accent[2], p.accent[3], 0.55 }, "OVERLAY")
   fill:SetPoint("TOPLEFT", track, "TOPLEFT"); fill:SetSize(math.max(2, trackW * frac), 3)
@@ -369,6 +435,8 @@ local function renderRow(body, p, it, y, maxCount, total, priced)
   return y - 30
 end
 
+local MAX_LIST_ROWS = 6
+
 local function renderItems(body, p, data, y)
   local items = data.items
   if #items == 0 then
@@ -376,19 +444,46 @@ local function renderItems(body, p, data, y)
     none:SetPoint("TOPLEFT", PAD, y - 2); none:SetText(L["No catches here yet."])
     return y - 24
   end
+  -- Windowed scrolling: UI.listOffset indexes into the full list and lives outside the
+  -- pools, so it survives the release-everything rebuild every refresh performs. It
+  -- resets only when the list itself is replaced (mode/scope/location change) -- never
+  -- on hide/show, so auto-hide can't lose the player's place -- and clamps when the
+  -- list shrinks (New session, junk filtered off).
+  local listKey = data.mode == "session" and "session"
+    or ("life\1" .. tostring(UI.scope) .. "\1" .. (data.loc.zone or "") .. "\1" .. (data.loc.subZone or ""))
+  if listKey ~= UI.listKey then UI.listKey = listKey; UI.listOffset = 0 end
+  local maxOffset = math.max(0, #items - MAX_LIST_ROWS)
+  UI.listMaxOffset = maxOffset  -- read by the window's wheel handler
+  if (UI.listOffset or 0) > maxOffset then UI.listOffset = maxOffset end
+  local off = UI.listOffset or 0
   -- Prices are session-only (lifetime price data would be stale) and opt-in.
   local priced = data.mode == "session" and ns.PricingActive and ns.PricingActive()
+  local s = ns.GetSettings and ns.GetSettings()
+  local icons = not (s and s.listIcons == false)  -- nil settings => the default (on)
+  -- Bars and share % stay relative to the WHOLE list, not the visible window.
   local maxCount = items[1].count or 1
   local total = 0
   for i = 1, #items do total = total + (items[i].count or 0) end
-  local shown = math.min(#items, 6)
-  for i = 1, shown do
-    y = renderRow(body, p, items[i], y, maxCount, total, priced)
+  local shown = math.min(#items, MAX_LIST_ROWS)
+  for i = off + 1, off + shown do
+    y = renderRow(body, p, items[i], y, maxCount, total, priced, icons)
   end
-  if #items > shown then
-    local more = bodyFS(body, 11, p.textSecondary)
-    more:SetPoint("TOPLEFT", PAD, y - 2)
-    more:SetText((L["+%d more"]):format(#items - shown))
+  if maxOffset > 0 then
+    -- Live indicator in the old "+N more" slot: pages down until the end, then jumps back.
+    local more = bodyRow(body)
+    more:SetPoint("TOPLEFT", PAD, y - 2); more:SetSize(INNER, 16)
+    local fs = bodyFS(more, 11, p.textSecondary)
+    fs:SetPoint("LEFT", 0, 0)
+    if off < maxOffset then
+      fs:SetText((L["+%d more"]):format(#items - off - shown) .. "  v")
+      more.onAction = function()
+        UI.listOffset = math.min(off + MAX_LIST_ROWS, maxOffset)
+        UI.RebuildBody()
+      end
+    else
+      fs:SetText(L["Back to top"] .. "  ^")
+      more.onAction = function() UI.listOffset = 0; UI.RebuildBody() end
+    end
     y = y - 18
   end
   return y - 4
@@ -676,6 +771,15 @@ local function BuildWindow()
   window:RegisterForDrag("LeftButton")
   window:SetScript("OnDragStart", function(self) markOwned(); self:StartMoving() end)
   window:SetScript("OnDragStop", function(self) self:StopMovingOrSizing(); savePos() end)
+  -- Wheel anywhere over the window scrolls the catch list (rows forward theirs here).
+  window:EnableMouseWheel(true)
+  window:SetScript("OnMouseWheel", function(_, delta)
+    if (UI.listMaxOffset or 0) == 0 then return end  -- list fits: inert, no ownership claim
+    markOwned()
+    local off = UI.listOffset or 0
+    local new = math.max(0, math.min(off - delta, UI.listMaxOffset))
+    if new ~= off then UI.listOffset = new; UI.RebuildBody() end
+  end)
 
   local fishSwatch = MakeTex(window, PALETTES.blend.accent, "ARTWORK")
   fishSwatch:SetPoint("TOPLEFT", 12, -10); fishSwatch:SetSize(12, 12)

@@ -164,6 +164,20 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
 - [ ] The Session view's **New session** button pops a confirmation dialog; **Yes** resets the
       session counts and the timer (fish/hr too) with the Lifetime totals untouched, while **No**
       or Esc leaves the session intact.
+- [ ] **Catch rows are real item rows:** hovering a row shows the item tooltip (also for a
+      demo/legacy row with no stored link — by-ID fallback, no Lua error); shift-click with
+      an open chat box inserts the item link (a link-less row silently does nothing); each
+      row shows its item icon, with gray-quality icons dimmed like their names.
+- [ ] **Wheel scrolling:** with more than 6 fish types, the mouse wheel scrolls the list —
+      including while the cursor is over a row — and the window height never changes; with
+      6 or fewer it does nothing. The **+N more** line pages down on click and flips to
+      **Back to top** at the end; the scroll position survives new catches landing, and
+      switching view/scope/zone resets it.
+- [ ] **Dragging from a catch row still moves the window**, and a catch landing while a row
+      is hovered doesn't wedge the tooltip or the hover highlight.
+- [ ] **Auto-hide interplay:** an auto-opened window is not auto-hidden while the mouse is
+      over a row, and a row click or wheel scroll promotes it to player-owned (it stays up
+      after the pause).
 
 ### Options panel
 
@@ -182,9 +196,13 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       **and** the totals/zone chart immediately (no `/reload`); re-checking shows them again.
       A gray catch is still tracked while hidden (visible again when re-enabled), and the count
       stays correct.
+- [ ] Unchecking **Show item icons** (or `/ft icons off`) removes the icons immediately and
+      the rows return to the exact pre-icon layout (full-width name and bar); re-checking
+      restores them. Tooltips and shift-click linking work either way.
 - [ ] The native **Defaults** button resets every option (minimap button hides, cast mode
-      reverts, auto-open returns to Full window, junk items shown, Auctionator prices on,
-      sessions back to After inactivity / 30m / pause on / 5m / auto-hide on).
+      reverts, auto-open returns to Full window, junk items shown, item icons shown,
+      Auctionator prices on, sessions back to After inactivity / 30m / pause on / 5m /
+      auto-hide on).
 
 ### Auctionator price overlay (on by default)
 

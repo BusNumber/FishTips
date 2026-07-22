@@ -5,6 +5,16 @@ All notable changes to Fish & Tips are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - Unreleased
+
+### Added
+
+- Every fish shows its **item icon**, hovering a row shows the **item tooltip**, 
+  and **shift-click** links the catch in chat, just like any other item list in the game. 
+  You can also disable icons in settings (or `/ft icons off`).
+- You can now use the **mouse wheel** (anywhere over the window) to scroll through the
+  entire list of every fish you've caught.
+
 ## [1.2.0] - 2026-07-14
 
 ### Added

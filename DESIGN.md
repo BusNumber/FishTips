@@ -19,7 +19,9 @@ doc — if you're about to change behavior, check here first.
 > the next cast, an active-time clock that pauses during breaks, a whole-session catch
 > list, `/reload` persistence, auto-hide for auto-opened windows — see *What it does* §5),
 > and an **Addon Compartment entry** (the default access path; the custom minimap button
-> is now opt-in, default off — see the API notes).
+> is now opt-in, default off — see the API notes), and an **interactive catch list**
+> (item icons behind `listIcons`, hover tooltips, shift-click chat linking, mouse-wheel
+> scrolling past the six-row viewport — see *What it does* §2).
 > A **LuaJIT test harness** (`tests/`, run in CI) asserts the
 > data-layer invariants out of game. Still roadmap: **junk auto-discard** (auto-selling or
 > throwing back gray catches — see Deferred/roadmap).
@@ -82,15 +84,31 @@ Display decisions (presentation only — they don't change the data): the window
 the Lifetime view** — a session is inherently the current character, so there is nothing to
 scope. The converse control, a **"New session" reset button, appears only in the Session
 view** (it pops a `StaticPopup` confirmation — guarding against an accidental wipe — that on
-accept calls `ns.ResetSession`). Each catch row shows the **rarity-colored item name**
-(poor-quality junk is dimmed well below the normal-item text so it visibly recedes), a thin
-**frequency bar**, the **count**, and the count's **share %** of the list's catches. The
+accept calls `ns.ResetSession`). Each catch row is a **real item row**: a small **item
+icon** (the `listIcons` setting, default on; junk icons dim like junk names), the
+**rarity-colored item name** (poor-quality junk is dimmed well below the normal-item text
+so it visibly recedes), a thin **frequency bar**, the **count**, and the count's
+**share %** of the list's catches. Hovering a row shows the **item tooltip** and
+shift-click **links the item in chat** — rows with no stored link (records that predate
+link capture, demo data) fall back to a by-ID tooltip and skip the chat link. The
 catch list's scope differs by view: **Session lists the whole session** — everything caught
 this session, merged across locations, so a pool-hunter's list doesn't empty out when they
 fly to the next pool — while **Lifetime filters to the current zone/subzone**. A
 **location header** names the current zone/subzone (catch counts are carried by the
 catch list and the **footer stat bar** — `casts · catches · /hr · minutes` — so the
 header itself stays uncluttered).
+
+The list shows **six rows and scrolls**: the mouse wheel anywhere over the window moves a
+windowed view into the full list, and the "+N more" line is a **live control** — click to
+page down; at the end it flips to "Back to top". The scroll offset is UI-transient: it
+resets when the list itself is replaced (view mode, Lifetime scope, or location change),
+clamps when the list shrinks, and is never persisted — auto-hide never resets it, so an
+auto-hidden window comes back where the player left off. Bars and share % stay relative to
+the **whole** list, not the visible slice. `listIcons` is an additive account-wide boolean
+like `includeJunk` below (`== nil` default-filled, sanitized to a boolean — **no
+`DB_VERSION` bump**), toggled by the "Show item icons" checkbox or `/ft icons on|off`;
+the tooltip and chat-link behaviors are always on — they have no visual footprint until
+used, so there is nothing for a setting to remove.
 
 The **`includeJunk`** account-wide setting (default on) decides whether gray (quality-0)
 catches appear at all. With it off, junk is dropped from the list **and** every total (the
@@ -264,7 +282,8 @@ disturbs the persistent one. All binding changes happen out of combat (login, dr
 
 ### UI.lua
 Presentation: the movable stats window (Session/Lifetime + a Session-only "New session"
-reset, a location header, per-location catch list, top-zones chart, footer stat bar), a
+reset, a location header, an interactive per-location catch list — icons, hover tooltips,
+shift-click linking, mouse-wheel scrolling — top-zones chart, footer stat bar), a
 **compact minimized strip**, the **Addon Compartment handlers** (the drawer entry is the
 default access path — see the API notes), a custom minimap button (opt-in, default off;
 its ring radius derives from the live minimap size and re-places on `OnSizeChanged`),
@@ -274,7 +293,12 @@ exposed) but kept in code for future customizable themes. Reads only via `ns.*` 
 
 Render model: WoW never garbage-collects Frames/Textures/FontStrings, so the themed body
 is drawn from small **manual widget pools** (re-parented on acquire) — a rebuild releases
-and re-acquires the same widgets instead of destroying anything. Refreshes are
+and re-acquires the same widgets instead of destroying anything. Catch rows come from a
+**dedicated Button pool**, the only pooled widgets with mouse state: tooltip/click
+handlers are installed once at creation and read per-row fields (cleared on acquire), so
+the shared frame pool stays mouse-inert. Rows forward drag and mouse-wheel to the window,
+preserving drag-anywhere and scroll-while-hovering; the scroll offset lives on `UI`,
+outside the pools, so it survives every rebuild. Refreshes are
 **coalesced**: data events schedule one flush on the next frame (`C_Timer.After(0)`),
 visibility is decided at flush time, and only the **visible surface** repaints — with just
 the compact strip up, the hidden window is skipped and simply repaints on show (every show
