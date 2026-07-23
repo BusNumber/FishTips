@@ -15,6 +15,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - You can now use the **mouse wheel** (anywhere over the window) to scroll through the
   entire list of every fish you've caught.
 
+### Fixed
+
+- Closing the stats window while fishing no longer fights auto-open: it now stays closed
+  until your next fishing break, then auto-opens as usual on your next outing. A one-time
+  chat hint explains how to reopen it sooner (`/ft` or the minimap addon drawer).
+
 ## [1.2.0] - 2026-07-14
 
 ### Added

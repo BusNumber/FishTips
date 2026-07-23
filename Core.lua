@@ -137,6 +137,28 @@ function ns.SessionElapsed()
   return elapsed
 end
 
+-- Is the session paused right now? The data layer owns this question -- the UI's
+-- auto-open suppression must not duplicate the grace arithmetic. False mid-channel;
+-- otherwise the gap since the last CAST decides, mirroring armPauseTimer (below) and
+-- SessionElapsed's live tail: uptime while lastCastAt survives, the epoch stamp right
+-- after a /reload (restore drops the uptime clock). No session or no cast yet reads
+-- as idle. Keys off pauseGraceSecs, NOT clockGraceSecs -- like the pause notifier,
+-- the sessionPause checkbox has no say here. Deliberately realSession/CharKey, not
+-- GetSessionScope: the demo scope has no real session and would read idle forever.
+function ns.IsSessionIdle()
+  if ns.fishingActive then return false end
+  local key = ns.CharKey()
+  local sess = key and realSession[key]
+  if not sess then return true end
+  local gap
+  if sess.lastCastAt then
+    gap = GetTime() - sess.lastCastAt
+  elseif sess.lastCastEpoch and time then
+    gap = time() - sess.lastCastEpoch
+  end
+  return gap == nil or gap >= pauseGraceSecs()
+end
+
 -- Auto-hide's trigger: the ONE deliberate timer in the session model (a pause must
 -- ACT at a moment; every other boundary is judged lazily at the next cast). Armed
 -- when a fishing channel ends, for the remainder of lastCastAt + grace; a new cast

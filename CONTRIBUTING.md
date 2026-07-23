@@ -139,6 +139,22 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       under the mouse. Turning the **Auto-hide stats window** checkbox off disables all of
       it — as does turning off **Pause session when not fishing** (auto-hide is part of the
       pause feature; both nested controls gray out with it).
+- [ ] **Close beats auto-open:** with auto-open on, close the stats window mid-fishing
+      (the X, `/ft`, or a compartment/minimap left-click) → the next casts do **not**
+      re-open it, and one chat line explains why — only the first such close per login
+      prints it. After a real break (~the pause grace since your last cast) the next cast
+      auto-opens again — **including** with **Start a new session = Manually only** and
+      **Pause session when not fishing** unchecked — and reopening manually right after
+      closing also re-arms auto-open on its own.
+- [ ] **Close while idle never suppresses:** closing the window in town (or any time
+      longer than the grace after your last cast) prints no hint, and the next cast still
+      auto-opens. Collapsing to the compact strip (the `_` button) never suppresses either —
+      the strip is still up — and an auto-hidden window still comes back on the next cast
+      (auto-hide is not a close).
+- [ ] **Compact parity:** with **Auto-open = Collapsed view**, closing the strip
+      mid-fishing suppresses the same way (next casts don't re-show it) and the next
+      fishing break re-arms it. With **Auto-open = Disabled**, a mid-fishing close prints
+      no hint.
 
 ### Persistence & scope
 

@@ -223,6 +223,21 @@ options panel, **Auto-hide stats window** and **Pause after** are nested under *
 session when not fishing** and gray out when it's unchecked — with the pause off there is
 no pause moment, so the gray-out must be truthful (no lying disabled states).
 
+And auto-open's third guard — **a manual close wins.** Closing the window or the compact
+strip mid-fishing (the X, `/ft`, a compartment/minimap left-click) arms `UI.autoSuppressed`,
+and auto-open stays inert until the session next pauses: the **same pause notifier** clears
+the suppression — and because Core fires it unconditionally ~grace after the last cast
+(regardless of the `sessionPause` checkbox *and* the `sessionEnd` mode), the re-arm happens
+in every configuration, so "closed while fishing stays closed until you take a break; the
+next outing auto-opens as usual." A manual reopen clears it immediately, and like
+`UI.autoShown` it is in-memory and never persisted — every login starts clear. The close
+arms it only when the session is live (`ns.IsSessionIdle()` is false) and `autoOpen` isn't
+`"off"` — an idle-time close has no imminent auto-open to fight; the collapse button (a
+surface *switch*, not a close) and auto-hide's own hide never suppress (auto-hide's contract
+stays "the next cast brings it back"). The first suppressing close per login prints a
+one-line chat hint pointing at `/ft` and the addon drawer — a player who only ever met the
+window through auto-open may not know either exists.
+
 ## Architecture
 
 ```
@@ -339,6 +354,9 @@ can't be broken by a render path):
 - `ns.GetSessionItems(scope)` → the same row shape, but the **whole session** merged across
   every zone/sub — the Session view's catch list (see *What it does* §2/§5)
 - `ns.GetSessionScope()` → the scope that owns the live session (the current character)
+- `ns.IsSessionIdle()` → `true` when the session is paused right now (no cast yet, or the
+  pause grace has elapsed since the last one; `false` mid-channel). Mirrors the pause
+  timer's arithmetic so the UI's auto-open suppression never duplicates it.
 
 The catch-counting seams (`GetTotals`, `GetZoneTotals`, `GetLocationItems`,
 `GetSessionItems`) apply the `includeJunk` display filter here, in one place: `sumItems`
@@ -597,7 +615,9 @@ awaiting in-game confirmation are flagged inline.
 - **Auto-open on fishing.** *Implemented.* `CHANNEL_START` fires `ns.FireFishingStart()`;
   the UI subscribes and calls `UI.ShowWindow(mode)` per the `autoOpen` setting — `"off"`
   (do nothing), `"full"` (the stats window), or `"collapsed"` (the compact strip). It only
-  acts when nothing is already up (so it never fights a surface the player is using) and aligns
+  acts when nothing is already up (so it never fights a surface the player is using) and not
+  while a mid-fishing manual close is being respected (`UI.autoSuppressed` — the third guard
+  alongside nothing-shown and never-persists-`uiShown`; see *What it does* §5), and aligns
   the collapsed form to the chosen mode via `SetCollapsed`. It is transient — it never persists
   `uiShown`, so an auto-open can't overwrite the player's manual show/hide preference. Its
   symmetric half is **auto-hide** (`autoHide`, default on): when the session pauses, a surface

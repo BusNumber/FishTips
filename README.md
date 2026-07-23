@@ -75,7 +75,7 @@ water to cast, and watch your catches auto-loot and log by location.
 - 🟢 Stats window (per zone/subzone · session + lifetime · per character + Warband) — *built and populated by live tracking*
 - 🟢 Catch tracking (recording fish by zone, keyed by item ID) — *working*
 - 🟢 Cast count and fish/hour — *working*
-- 🟢 Auto-open when fishing starts (full window or compact strip) — *working*
+- 🟢 Auto-open when fishing starts (full window or compact strip; closing it mid-session keeps it closed until your next break) — *working*
 - 🟢 Smart sessions — auto-end rules, pausing fish/hr timer, whole-session catch list, `/reload`-proof — *built*
 - 🟢 Casting — keybind **and/or** double-right-click, chosen in options (off by default) — *working*
 - 🟢 Fishing-only auto-loot (on by default; toggle in options) — *working*

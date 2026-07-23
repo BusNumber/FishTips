@@ -16,6 +16,11 @@ local L = ns.L  -- user-facing strings go through the locale table (English keys
 -- shown by the auto-open path and untouched since. Any player interaction -- manual
 -- toggle, a drag, any control click -- promotes the surface to player-owned, and
 -- auto-hide (the session-pause subscriber at the bottom) then leaves it alone.
+-- The converse: a manual close mid-fishing must beat the next cast's auto-open.
+-- UI.autoSuppressed blocks ShowWindow until the session next pauses (or the player
+-- reopens manually). In-memory only, never persisted -- symmetric with UI.autoShown,
+-- so every login starts clear. Set/cleared in UI.Toggle and the session-pause
+-- subscribers at the bottom.
 local function markOwned() UI.autoShown = false end
 
 local WIN_W = 340
@@ -1031,24 +1036,44 @@ end
 -- ---------------------------------------------------------------------------
 -- Public toggle + refresh
 -- ---------------------------------------------------------------------------
+
+-- A manual hide while the session is live arms the auto-open suppression, explained
+-- once per login by a chat hint. An idle-time close arms nothing -- there is no
+-- imminent auto-open to fight -- and neither does autoOpen "off" (the hint would lie).
+local hintShown = false
+
+local function suppressAuto()
+  local s = ns.GetSettings and ns.GetSettings()
+  if ((s and s.autoOpen) or "full") == "off" then return end
+  if ns.IsSessionIdle and ns.IsSessionIdle() then return end
+  UI.autoSuppressed = true
+  if hintShown then return end
+  hintShown = true
+  print("|cffffd36eFish & Tips|r: " .. L["Stats window hidden -- it won't auto-open again until after your next fishing break. /ft or the minimap addon drawer reopens it anytime."])
+end
+
 function UI.Toggle()
   markOwned()  -- a manual show/hide always takes ownership from auto-open
   local s = ns.GetSettings and ns.GetSettings()
   if s and s.uiCollapsed then
     if UI.compact:IsShown() then
       UI.compact:Hide()
+      suppressAuto()  -- an explicit close mid-fishing beats the next cast's auto-open
       if ns.SetSetting then ns.SetSetting("uiShown", false) end
     else
       UI.RefreshCompact(); UI.compact:Show()
+      UI.autoSuppressed = false  -- a manual reopen re-arms auto-open
       if ns.SetSetting then ns.SetSetting("uiShown", true) end
     end
   else
     if UI.window:IsShown() then
       UI.window:Hide()
+      suppressAuto()  -- an explicit close mid-fishing beats the next cast's auto-open
       if ns.SetSetting then ns.SetSetting("uiShown", false) end
     else
       -- keep the Refresh: it repaints a window dirtied while hidden (coalesced refreshes skip it)
       UI.window:Show(); UI.Refresh()
+      UI.autoSuppressed = false  -- a manual reopen re-arms auto-open
       if ns.SetSetting then ns.SetSetting("uiShown", true) end
     end
   end
@@ -1064,11 +1089,13 @@ end
 
 -- Auto-open on fishing start. `mode` = "full" (the stats window) or "collapsed" (the compact
 -- strip). Acts only when the UI is not already up, so it never fights a surface the player is
--- using. Transient: it never persists uiShown, so it can't override a manual hide on the next
--- login. It does align the collapsed form to `mode` (via SetCollapsed) so the toggle/state
--- stay consistent.
+-- using -- and not while a mid-fishing manual close is being respected (UI.autoSuppressed,
+-- cleared by the session-pause notifier or a manual reopen). Transient: it never persists
+-- uiShown, so it can't override a manual hide on the next login. It does align the collapsed
+-- form to `mode` (via SetCollapsed) so the toggle/state stay consistent.
 function UI.ShowWindow(mode)
   if not UI.window then return end
+  if UI.autoSuppressed then return end  -- a mid-fishing manual close holds until the next pause
   if UI.window:IsShown() or (UI.compact and UI.compact:IsShown()) then return end
   UI.SetCollapsed(mode == "collapsed")
   UI.autoShown = true  -- auto-hide may tuck this surface away when the session pauses
@@ -1141,4 +1168,10 @@ ef:SetScript("OnEvent", function()
     surface:Hide()
     UI.autoShown = false
   end)
+  -- A fishing break ends the standoff: the pause notifier fires ~grace after the
+  -- last cast, and the NEXT cast may auto-open again. Deliberately not folded into
+  -- the auto-hide subscriber above -- that one early-returns when autoHide or
+  -- sessionPause are off, while Core fires this notifier unconditionally, which
+  -- the clear relies on.
+  ns.RegisterSessionPause(function() UI.autoSuppressed = false end)
 end)

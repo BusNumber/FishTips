@@ -219,7 +219,7 @@ function RegisterPanel()
   -- Stats window --------------------------------------------------------------------------
   layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Stats window"]))
   Settings.CreateDropdown(category, Register("autoOpen", L["Auto-open when fishing"]), AutoOpenOptions,
-    L["What to show when you start fishing: nothing, the full stats window, or the compact strip. Only acts when the window isn't already open."])
+    L["What to show when you start fishing: nothing, the full stats window, or the compact strip. Only acts when the window isn't already open -- and if you close it while fishing, it stays closed until your next break."])
   Settings.CreateCheckbox(category, Register("showMinimap", L["Show minimap button"]),
     L["Show the Fish & Tips button on the minimap. Either way, the addon stays reachable from the minimap's addon compartment."])
   Settings.SetOnValueChangedCallback(addonName .. "_showMinimap", function()

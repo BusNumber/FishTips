@@ -570,6 +570,75 @@ test("pause_notifier_fires_once_then_cancels_on_recast", function()
   assertEq(fired, 2, "the pause fires again after the next stop")
 end)
 
+test("is_session_idle_lifecycle", function()
+  local ns, S = loadAddon({})
+  assertTrue(ns.IsSessionIdle(), "idle before any cast")
+  cast(S)
+  assertEq(ns.IsSessionIdle(), false, "mid-channel is never idle")
+  S.advance(20)
+  stopChannel(S)
+  assertEq(ns.IsSessionIdle(), false, "just stopped: inside the grace")
+  S.advance(279)  -- 299s since the cast
+  assertEq(ns.IsSessionIdle(), false, "still inside the 5-min grace")
+  S.advance(2)    -- 301s since the cast
+  assertTrue(ns.IsSessionIdle(), "grace elapsed since the last cast -> idle")
+  cast(S)
+  assertEq(ns.IsSessionIdle(), false, "the next cast un-idles immediately")
+  -- A marathon channel never reads idle while it runs; at stop, the gap since the
+  -- CAST governs (mirrors armPauseTimer, whose delay clamps to 0 in that case).
+  S.advance(600)
+  assertEq(ns.IsSessionIdle(), false, "fishingActive overrides any gap")
+  stopChannel(S)
+  assertTrue(ns.IsSessionIdle(), "stop after an over-grace channel is immediately idle")
+end)
+
+test("is_session_idle_respects_grace_setting", function()
+  local ns, S = loadAddon({})
+  ns.GetSettings().sessionGraceMinutes = 1
+  cast(S)
+  S.advance(20)
+  stopChannel(S)
+  S.advance(45)  -- 65s since the cast: past a 1-min grace
+  assertTrue(ns.IsSessionIdle(), "shorter grace respected")
+  ns.GetSettings().sessionGraceMinutes = 5
+  assertEq(ns.IsSessionIdle(), false, "grace read live: a longer grace un-idles the same gap")
+  ns.GetSettings().sessionGraceMinutes = 1
+  ns.GetSettings().sessionPause = false
+  assertTrue(ns.IsSessionIdle(), "the sessionPause checkbox has no say in idleness")
+end)
+
+test("is_session_idle_epoch_fallback_after_reload", function()
+  local _, S = loadAddon({})
+  cast(S)
+  S.advance(20)
+  stopChannel(S)
+  local db = _G.FishTipsDB
+  local epoch = S.epoch
+  -- "Reload": lastCastAt is uptime-based and dropped at restore, so the gap must
+  -- run on the epoch stamp (which sits 20s behind `epoch` -- stamped at the cast).
+  local ns2 = loadAddon({ db = db, setup = function(st) st.epoch = epoch + 100 end })
+  assertEq(ns2.IsSessionIdle(), false, "inside the grace on the epoch stamp")
+  -- Past the grace but inside the 30-min idle rule, so the session itself restores --
+  -- exactly the state the auto-open suppression clear cares about.
+  local ns3 = loadAddon({ db = db, setup = function(st) st.epoch = epoch + 360 end })
+  assertTrue(ns3.IsSessionIdle(), "past the grace on the epoch stamp")
+end)
+
+test("pause_notifier_fires_with_pause_setting_off", function()
+  -- Core's contract: the notifier keys off the grace REGARDLESS of the sessionPause
+  -- checkbox (that governs only the elapsed-time arithmetic). The UI's auto-open
+  -- suppression clear depends on this firing unconditionally.
+  local ns, S = loadAddon({})
+  ns.GetSettings().sessionPause = false
+  local fired = 0
+  ns.RegisterSessionPause(function() fired = fired + 1 end)
+  cast(S)
+  S.advance(20)
+  stopChannel(S)
+  S.advance(600)
+  assertEq(fired, 1, "the pause notifier fires with the checkbox off")
+end)
+
 -- ---------------------------------------------------------------------------
 -- Runner
 -- ---------------------------------------------------------------------------
