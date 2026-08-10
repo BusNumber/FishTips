@@ -53,6 +53,31 @@ function ns.FireSessionPause()
   end
 end
 
+-- Catch-alert notification -- fired at most once per fishing loot window, when the
+-- window recorded at least one alert-worthy catch (the catchAlerts setting on and
+-- quality >= the alertQuality threshold -- like the includeJunk filter, the policy
+-- lives in the data layer). The FIRST notifier with a payload: an array of
+-- { itemID, name, link, quality, count } merged by itemID, valid only for the
+-- duration of the synchronous fire -- subscribers must not retain it. The UI
+-- subscriber delivers sound + chat and deliberately never touches window visibility.
+local catchAlerters = {}
+
+function ns.RegisterCatchAlert(fn)
+  catchAlerters[#catchAlerters + 1] = fn
+end
+
+function ns.FireCatchAlert(items)
+  for i = 1, #catchAlerters do
+    catchAlerters[i](items)
+  end
+end
+
+-- Shared chat-line prefix for the addon's own messages (new code only -- older
+-- call sites keep their inline copies).
+function ns.Say(msg)
+  print("|cffffd36eFish & Tips|r: " .. msg)
+end
+
 -- ---------------------------------------------------------------------------
 -- Character identity -- resolved lazily; the normalized realm is unreliable at
 -- ADDON_LOADED, so we wait until PLAYER_LOGIN / first use (PEW-safe).
@@ -382,6 +407,7 @@ end
 -- pool; location filtering stays a Lifetime-view concern.
 function ns.GetSessionItems(scope)
   local merged = {}
+  local lifeCounts = {}  -- itemID -> lifetime count, for the "New!" first-catch marker
   local hide = junkHidden()
   for _, c in pairs(scopeChars(scope)) do
     local b = c.session
@@ -404,10 +430,31 @@ function ns.GetSessionItems(scope)
           end
         end
       end
+      -- A char with a live session also contributes its lifetime counts (all zones --
+      -- the session list is cross-zone, so the comparison must be too). Junk stays
+      -- counted here: this is a total-count map, not a display list.
+      local life = c.lifetime
+      if life and life.zones then
+        for _, z in pairs(life.zones) do
+          if z.subs then
+            for _, sub in pairs(z.subs) do
+              if sub.items then
+                for itemID, it in pairs(sub.items) do
+                  lifeCounts[itemID] = (lifeCounts[itemID] or 0) + (it.count or 0)
+                end
+              end
+            end
+          end
+        end
+      end
     end
   end
   local list = {}
-  for _, m in pairs(merged) do
+  for itemID, m in pairs(merged) do
+    -- First-ever catch: session records also write to lifetime, so equal counts mean
+    -- every catch of this item ever happened this session. Only this seam sets the
+    -- field, so the marker is session-view-only by construction.
+    m.isNew = m.count == (lifeCounts[itemID] or 0)
     list[#list + 1] = resolveItem(m)
   end
   table.sort(list, function(a, b) return a.count > b.count end)
@@ -784,6 +831,17 @@ local function processLoot(nativeAutoLoot)
   -- autoLoot default-on; nil settings => default behavior. Skip our pass when the client
   -- is natively auto-looting, so the slots aren't requested twice.
   local doLoot = ((not s) or s.autoLoot ~= false) and not nativeAutoLoot
+  -- Catch alerts: same live-read discipline as autoLoot. Only successfully RECORDED
+  -- slots can alert (so the fishing gate and untracked slots are excluded for free),
+  -- merged by itemID, ONE FireCatchAlert per window -- one sound, however many slots.
+  local alertsOn = (not s) or s.catchAlerts ~= false
+  -- Dev override (/ft alertall): threshold drops to zero so EVERY recorded catch
+  -- alerts -- the full record->gate->notifier->delivery path without waiting for a
+  -- rare. Lives on ns, never in settings, so it cannot survive a logout or /reload.
+  -- It does not bypass the catchAlerts enable gate above.
+  local alertMinQ = ns.alertAllCatches and 0
+    or (((s and s.alertQuality) == "epic") and 4 or 3)
+  local alerts, alertByID
   local n = GetNumLootItems and GetNumLootItems() or 0
   local recorded = 0
   for i = n, 1, -1 do
@@ -793,11 +851,22 @@ local function processLoot(nativeAutoLoot)
       local itemID = GetItemInfoInstant(link)  -- nil for currency -> not tracked
       if itemID and recordCatchNoRefresh(itemID, quantity or 1, name, quality, link) then
         recorded = recorded + 1
+        if alertsOn and (quality or 0) >= alertMinQ then
+          if not alerts then alerts, alertByID = {}, {} end
+          local a = alertByID[itemID]
+          if not a then
+            a = { itemID = itemID, name = name, link = link, quality = quality, count = 0 }
+            alertByID[itemID] = a
+            alerts[#alerts + 1] = a
+          end
+          a.count = a.count + (quantity or 1)
+        end
       end
     end
     if doLoot then LootSlot(i) end  -- grabs item, money, and currency slots alike
   end
   if recorded > 0 then ns.FireRefresh() end
+  if alerts then ns.FireCatchAlert(alerts) end  -- record first, announce second
 end
 
 -- ---------------------------------------------------------------------------

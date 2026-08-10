@@ -137,6 +137,19 @@ test("list_icons_setting_sanitized", function()
   assertEq(ns2.GetSettings().listIcons, false, "persisted false survives the == nil fill")
 end)
 
+test("alert_settings_sanitized", function()
+  local ns = loadAddon({ db = { version = 1, chars = {}, settings = {
+    catchAlerts = "garbage", alertQuality = "legendary",
+  } } })
+  assertEq(ns.GetSettings().catchAlerts, true, "type garbage falls back to the default")
+  assertEq(ns.GetSettings().alertQuality, "rare", "unknown threshold clamps to rare")
+  local ns2 = loadAddon({ db = { version = 1, chars = {}, settings = {
+    catchAlerts = false, alertQuality = "epic",
+  } } })
+  assertEq(ns2.GetSettings().catchAlerts, false, "persisted false survives the == nil fill")
+  assertEq(ns2.GetSettings().alertQuality, "epic", "persisted epic survives the clamp")
+end)
+
 test("migrate_stamps_fresh_db", function()
   local ns = loadAddon({})
   assertEq(_G.FishTipsDB.version, 1, "DB version stamped")
@@ -269,6 +282,154 @@ test("item_rows_carry_link_for_ui", function()
   local sess = ns.GetSessionItems(key)
   assertEq(sess[1].itemID, 111)
   assertEq(sess[1].link, "item:111", "session rows carry the link too")
+end)
+
+test("mixed_quality_window_stores_all_qualities", function()
+  -- The catch-alert threshold and the "New!" marker read quality straight off the
+  -- store; pin that a mixed window writes every slot's quality faithfully, once.
+  local ns, S = loadFishing()
+  local key = ns.CharKey()
+  S.setLoot({
+    { itemID = 100, name = "Gray",   quantity = 1, quality = 0 },
+    { itemID = 101, name = "White",  quantity = 2, quality = 1 },
+    { itemID = 103, name = "Blue",   quantity = 1, quality = 3 },
+    { itemID = 104, name = "Purple", quantity = 1, quality = 4 },
+  })
+  S.fire("LOOT_READY", false)
+  for _, bucket in ipairs({ "lifetime", "session" }) do
+    local items = _G.FishTipsDB.chars[key][bucket].zones[S.zone].subs[S.sub].items
+    assertEq(items[100].quality, 0, bucket .. " stores poor quality")
+    assertEq(items[101].quality, 1, bucket .. " stores common quality")
+    assertEq(items[103].quality, 3, bucket .. " stores rare quality")
+    assertEq(items[104].quality, 4, bucket .. " stores epic quality")
+  end
+  assertEq(ns.GetTotals(key, "session").catches, 5, "every slot recorded exactly once")
+end)
+
+test("empty_window_fires_no_refresh", function()
+  -- A window with nothing recordable (money only) must not repaint the UI --
+  -- pins the recorded > 0 conditional that the catch-alert fire sits beside.
+  local ns, S = loadFishing()
+  local refreshes = 0
+  ns.RegisterRefresh(function() refreshes = refreshes + 1 end)
+  S.setLoot({ { link = false }, { link = false } })  -- two money slots
+  S.fire("LOOT_READY", false)
+  assertEq(refreshes, 0, "no refresh for a window with nothing recorded")
+  assertEq(S.lootSlotCalls, 2, "money slots still looted")
+end)
+
+test("alert_fires_once_per_window_with_payload", function()
+  -- Native autoloot ON so the slots persist across the re-fired events -- without the
+  -- once-per-window guard covering alerts, three deliveries would mean three sounds.
+  local ns, S = loadFishing()
+  local fires, last = 0, nil
+  ns.RegisterCatchAlert(function(items) fires = fires + 1; last = items end)
+  S.setLoot({
+    { itemID = 111, name = "BlueFish", quantity = 2, quality = 3 },
+    { itemID = 222, name = "GrayJunk", quantity = 1, quality = 0 },
+  })
+  S.fire("LOOT_READY", true)
+  S.fire("LOOT_READY", true)
+  S.fire("LOOT_OPENED", true)
+  assertEq(fires, 1, "one alert per window across re-fired events")
+  assertEq(#last, 1, "only the rare slot qualifies")
+  assertEq(last[1].itemID, 111)
+  assertEq(last[1].name, "BlueFish", "payload carries the name")
+  assertEq(last[1].link, "item:111", "payload carries the link")
+  assertEq(last[1].quality, 3, "payload carries the quality")
+  assertEq(last[1].count, 2, "payload carries the quantity")
+end)
+
+test("two_rares_one_window_single_fire", function()
+  local ns, S = loadFishing()
+  local fires, last = 0, nil
+  ns.RegisterCatchAlert(function(items) fires = fires + 1; last = items end)
+  S.setLoot({
+    { itemID = 111, quantity = 1, quality = 3 },
+    { itemID = 222, quantity = 1, quality = 4 },
+  })
+  S.fire("LOOT_READY", false)
+  assertEq(fires, 1, "two alert-worthy items, still one fire (one sound)")
+  assertEq(#last, 2, "both items in the payload")
+  S.fire("LOOT_CLOSED")
+  -- Two slots of the SAME rare merge into one payload entry with the summed count.
+  S.setLoot({
+    { itemID = 333, quantity = 1, quality = 3 },
+    { itemID = 333, quantity = 2, quality = 3 },
+  })
+  S.fire("LOOT_READY", false)
+  assertEq(fires, 2)
+  assertEq(#last, 1, "same itemID merged")
+  assertEq(last[1].count, 3, "counts summed across slots")
+end)
+
+test("below_threshold_no_alert", function()
+  local ns, S = loadFishing()
+  local fires = 0
+  ns.RegisterCatchAlert(function() fires = fires + 1 end)
+  S.setLoot({
+    { itemID = 111, quantity = 1, quality = 1 },
+    { itemID = 222, quantity = 1, quality = 2 },
+  })
+  S.fire("LOOT_READY", false)
+  assertEq(fires, 0, "common/uncommon catches never alert at the rare threshold")
+end)
+
+test("alerts_off_no_fire_still_records", function()
+  local ns, S = loadFishing()
+  local key = ns.CharKey()
+  ns.GetSettings().catchAlerts = false
+  local fires = 0
+  ns.RegisterCatchAlert(function() fires = fires + 1 end)
+  S.setLoot({ { itemID = 111, quantity = 1, quality = 4 } })
+  S.fire("LOOT_READY", false)
+  assertEq(fires, 0, "setting off silences the notifier")
+  assertEq(ns.GetTotals(key, "session").catches, 1, "tracking unaffected")
+end)
+
+test("epic_threshold_filters_rares", function()
+  local ns, S = loadFishing()
+  ns.GetSettings().alertQuality = "epic"
+  local fires = 0
+  ns.RegisterCatchAlert(function() fires = fires + 1 end)
+  S.setLoot({ { itemID = 111, quantity = 1, quality = 3 } })
+  S.fire("LOOT_READY", false)
+  assertEq(fires, 0, "rare stays silent at the epic threshold")
+  S.fire("LOOT_CLOSED")
+  S.setLoot({ { itemID = 222, quantity = 1, quality = 4 } })
+  S.fire("LOOT_READY", false)
+  assertEq(fires, 1, "epic alerts at the epic threshold")
+end)
+
+test("alertall_override_alerts_on_common_catches", function()
+  -- Dev override (/ft alertall): every recorded catch alerts, via an ns flag that is
+  -- never a setting -- so it cannot be persisted and clears at the next login/reload.
+  local ns, S = loadFishing()
+  local fires, last = 0, nil
+  ns.RegisterCatchAlert(function(items) fires = fires + 1; last = items end)
+  _G.SlashCmdList["FISHTIPS"]("alertall on")
+  S.setLoot({ { itemID = 111, quantity = 1, quality = 1 } })
+  S.fire("LOOT_READY", false)
+  assertEq(fires, 1, "a common catch alerts under the override")
+  assertEq(last[1].quality, 1, "payload carries the real quality")
+  assertEq(ns.GetSettings().alertAllCatches, nil, "override never lands in saved settings")
+  S.fire("LOOT_CLOSED")
+  ns.GetSettings().catchAlerts = false
+  S.setLoot({ { itemID = 222, quantity = 1, quality = 1 } })
+  S.fire("LOOT_READY", false)
+  assertEq(fires, 1, "the override does not bypass the enable gate")
+  _G.SlashCmdList["FISHTIPS"]("alertall off")
+  assertEq(ns.alertAllCatches, false, "slash toggles the flag off")
+end)
+
+test("non_fishing_loot_no_alert", function()
+  local ns, S = loadAddon({})  -- no channel, IsFishingLoot stays false
+  local fires = 0
+  ns.RegisterCatchAlert(function() fires = fires + 1 end)
+  S.setLoot({ { itemID = 111, quantity = 1, quality = 4 } })
+  S.fire("LOOT_READY", false)
+  S.fire("LOOT_OPENED", false)
+  assertEq(fires, 0, "an epic mob/chest drop never alerts (not recorded, so not alerted)")
 end)
 
 test("opened_fallback_when_ready_missing", function()
@@ -515,6 +676,51 @@ test("session_items_merge_across_zones", function()
   items = ns.GetSessionItems(key)
   assertEq(#items, 1, "junk filter honored by the session list")
   assertEq(items[1].itemID, 111)
+end)
+
+test("session_rows_resolve_name_and_quality", function()
+  -- The isNew derivation lands in GetSessionItems' output loop; pin that session
+  -- rows pass through resolveItem intact (name/quality/link) before that changes.
+  local ns, S = loadFishing()
+  local key = ns.CharKey()
+  S.setLoot({ { itemID = 111, name = "FishA", quantity = 2, quality = 3 } })
+  S.fire("LOOT_READY", false)
+  local rows = ns.GetSessionItems(key)
+  assertEq(#rows, 1)
+  assertEq(rows[1].name, "FishA", "session row carries the name")
+  assertEq(rows[1].quality, 3, "session row carries the quality")
+  assertEq(rows[1].link, "item:111", "session row carries the link")
+end)
+
+test("session_items_isnew_derivation", function()
+  -- "New!" marker: session count == lifetime count <=> every catch of the item ever
+  -- happened this session (session records also write to lifetime).
+  local ns, S = loadFishing({ db = { version = 1, chars = {
+    ["Tester-TestRealm"] = lifeWith(5, "Zone1", "SubA", {
+      [999] = { count = 3, quality = 1, name = "OldFish" },
+    }),
+  } } })
+  local key = ns.CharKey()
+  local function rowById(id)
+    for _, r in ipairs(ns.GetSessionItems(key)) do
+      if r.itemID == id then return r end
+    end
+  end
+  catchFish(S, 999, 1)
+  assertEq(rowById(999).isNew, false, "a fish with prior lifetime history is not new")
+  catchFish(S, 111, 2)
+  assertEq(rowById(111).isNew, true, "first-ever catch is new")
+  catchFish(S, 111, 1)
+  assertEq(rowById(111).isNew, true, "stays new while all its catches are this session")
+  catchFish(S, 555, 1, 0)
+  assertEq(rowById(555).isNew, true, "the marker is quality-agnostic (junk firsts count)")
+  ns.ResetSession()
+  catchFish(S, 111, 1)
+  assertEq(rowById(111).isNew, false, "a later session sees the lifetime history")
+  local lrows = ns.GetLocationItems(key, "lifetime", "Zone1", "SubA")
+  for _, r in ipairs(lrows) do
+    assertEq(r.isNew, nil, "lifetime rows never carry the marker")
+  end
 end)
 
 test("session_survives_reload", function()

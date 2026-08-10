@@ -27,6 +27,12 @@ local WIN_W = 340
 local PAD = 12
 local INNER = WIN_W - 2 * PAD
 
+-- Rare-catch alert sound. One named constant so the in-game sound pick (see the
+-- CONTRIBUTING checklist) stays a one-line swap; played on the SFX channel, once
+-- per loot window. Ear-test alternates: UI_RAID_LOOT_TOAST_LESSER_ITEM_WON,
+-- UI_LEGENDARY_LOOT_TOAST.
+local ALERT_SOUND = SOUNDKIT and SOUNDKIT.UI_EPICLOOT_TOAST
+
 -- Theme palettes. Colors are 0-1 RGB(A). accentText is the readable on-accent text color.
 local PALETTES = {
   classic = {
@@ -416,8 +422,18 @@ local function renderRow(body, p, it, y, maxCount, total, priced, icons)
   -- Junk (quality 0) reads close to white at the default poor-gray; push it well dimmer so
   -- it visibly recedes from the worthwhile catches.
   if (it.quality or 1) == 0 then qr, qg, qb = 0.36, 0.36, 0.36 end
+  -- First-ever catch marker (Session view only by construction -- only GetSessionItems
+  -- sets isNew). The tag reserves width out of the name's box, so a long name truncates
+  -- BEFORE the tag instead of underneath it.
+  local rightInset = 82
+  if it.isNew then
+    local tag = bodyFS(row, 10, p.accent)
+    tag:SetText(L["New!"])
+    tag:SetPoint("TOPRIGHT", -84, -2)
+    rightInset = 84 + tag:GetStringWidth() + 4
+  end
   local name = bodyFS(row, 13, { qr, qg, qb })
-  name:SetPoint("TOPLEFT", indent, -1); name:SetPoint("RIGHT", -82, 0); name:SetJustifyH("LEFT")
+  name:SetPoint("TOPLEFT", indent, -1); name:SetPoint("RIGHT", -rightInset, 0); name:SetJustifyH("LEFT")
   -- Optional Auctionator value of this catch (count * unit price), appended after the name.
   if priced then
     local unit = ns.GetItemPrice(it.itemID)
@@ -1149,6 +1165,23 @@ ef:SetScript("OnEvent", function()
     local s = ns.GetSettings and ns.GetSettings()
     local mode = (s and s.autoOpen) or "full"
     if mode ~= "off" then UI.ShowWindow(mode) end
+  end)
+  -- Rare-catch alerts: one sound per loot window, one chat line per item (the payload
+  -- is per-window, merged by itemID). Pure delivery -- Core gates on catchAlerts /
+  -- alertQuality before firing. Deliberately NEVER touches window visibility: no
+  -- ShowWindow, no autoShown/autoSuppressed -- an alert must not fight
+  -- close-beats-auto-open or auto-hide.
+  ns.RegisterCatchAlert(function(items)
+    if ALERT_SOUND and PlaySound then PlaySound(ALERT_SOUND, "SFX") end
+    for i = 1, #items do
+      local it = items[i]
+      local label = it.link or it.name or ("item:" .. tostring(it.itemID))
+      if (it.count or 1) > 1 then
+        ns.Say((L["Nice catch: %s x%d"]):format(label, it.count))
+      else
+        ns.Say((L["Nice catch: %s"]):format(label))
+      end
+    end
   end)
   -- The symmetric half of auto-open: when the session pauses (grace minutes after the
   -- last cast), tuck away the surface auto-open showed. Never a surface the player

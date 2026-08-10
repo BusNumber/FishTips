@@ -19,6 +19,8 @@ local DEFAULTS = {
   castMode = "off",         -- cast trigger: "off" | "doubleclick" | "key" | "both"
   castDelay = 0.3,          -- double-click window (seconds)
   autoLoot = true,          -- auto-loot a fishing catch (read live by Core's loot handler)
+  catchAlerts = true,       -- sound + chat line on an alert-worthy catch (read live by Core)
+  alertQuality = "rare",    -- alert threshold: "rare" (quality >= 3) | "epic" (>= 4)
   sessionEnd = "idle",      -- when a NEW session starts: "manual" | "idle" | "zone" | "zoneidle"
   sessionIdleMinutes = 30,  -- inactivity threshold (minutes since last cast) for idle/zoneidle
   sessionPause = true,      -- session clock counts inter-cast gaps only up to the grace below
@@ -75,6 +77,10 @@ local function applyDefaults(s)
   if type(s.sessionGraceMinutes) ~= "number" then s.sessionGraceMinutes = DEFAULTS.sessionGraceMinutes end
   if s.sessionGraceMinutes < 1 then s.sessionGraceMinutes = 1
   elseif s.sessionGraceMinutes > 15 then s.sessionGraceMinutes = 15 end
+  if type(s.catchAlerts) ~= "boolean" then s.catchAlerts = DEFAULTS.catchAlerts end
+  if s.alertQuality ~= "rare" and s.alertQuality ~= "epic" then
+    s.alertQuality = DEFAULTS.alertQuality
+  end
   if type(s.sessionPause) ~= "boolean" then s.sessionPause = DEFAULTS.sessionPause end
   if type(s.autoHide) ~= "boolean" then s.autoHide = DEFAULTS.autoHide end
   if type(s.includeJunk) ~= "boolean" then s.includeJunk = DEFAULTS.includeJunk end
@@ -130,6 +136,13 @@ local function AutoOpenOptions()
   return c:GetData()
 end
 
+local function AlertQualityOptions()
+  local c = Settings.CreateControlTextContainer()
+  c:Add("rare", L["Rare or better"])
+  c:Add("epic", L["Epic only"])
+  return c:GetData()
+end
+
 local function SessionEndOptions()
   local c = Settings.CreateControlTextContainer()
   c:Add("idle",     L["After inactivity"])
@@ -177,6 +190,17 @@ function RegisterPanel()
   layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Looting"]))
   Settings.CreateCheckbox(category, Register("autoLoot", L["Auto-loot catches"]),
     L["Automatically loot everything from a catch. Only applies to fishing loot."])
+
+  -- Alerts --------------------------------------------------------------------------------
+  -- No side-effect callbacks: Core reads both live per loot window, like autoLoot.
+  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Alerts"]))
+  local alertsInit = Settings.CreateCheckbox(category, Register("catchAlerts", L["Alert on rare catches"]),
+    L["Play a sound and print a chat line when you catch something rare. Never opens or moves the stats window."])
+  local alertQualityInit = Settings.CreateDropdown(category, Register("alertQuality", L["Alert threshold"]),
+    AlertQualityOptions, L["The minimum quality that triggers the alert."])
+  -- A real dependency (the threshold is meaningless with alerts off), so the gray-out
+  -- tells the truth -- unlike the Auctionator case below, nesting is wanted here.
+  alertQualityInit:SetParentInitializer(alertsInit, function() return settings.catchAlerts end)
 
   -- Sessions ------------------------------------------------------------------------------
   -- Session boundaries and the clock are judged live in Core (lazily, at the next cast),
@@ -315,6 +339,38 @@ SlashCmdList["FISHTIPS"] = function(msg)
     else
       say("autoloot: on | off  (currently " .. (settings.autoLoot ~= false and "on" or "off") .. ")")
     end
+  elseif cmd == "alerts" then
+    if rest == "on" or rest == "off" then
+      settings.catchAlerts = (rest == "on")
+      say((L["catch alerts %s."]):format(rest))
+    elseif rest == "rare" or rest == "epic" then
+      settings.alertQuality = rest
+      say((L["alert threshold: %s."]):format(rest))
+    else
+      say("alerts: on | off | rare | epic  (currently "
+        .. (settings.catchAlerts ~= false and "on" or "off")
+        .. ", " .. (settings.alertQuality or "rare") .. ")")
+    end
+  elseif cmd == "alerttest" then
+    -- Dev-only (like castdebug): preview the alert sound + chat line without fishing.
+    -- Bypasses the Core gate on purpose -- it exercises delivery, not policy.
+    if ns.FireCatchAlert then
+      ns.FireCatchAlert({ { itemID = 238383, name = "Eversong Trout", quality = 3, count = 1 } })
+    end
+    say("alert test fired.")
+  elseif cmd == "alertall" then
+    -- Dev-only: alert on EVERY recorded catch (the quality threshold drops to zero in
+    -- Core) so the real loot->gate->notifier->delivery path can be tested on common
+    -- fish. In-memory only -- never saved, so it clears at logout or /reload.
+    if rest == "on" then ns.alertAllCatches = true
+    elseif rest == "off" then ns.alertAllCatches = false
+    else ns.alertAllCatches = not ns.alertAllCatches end
+    if ns.alertAllCatches then
+      say("alert on every catch: on (in-memory -- clears at logout or /reload)."
+        .. (settings.catchAlerts == false and " Heads up: alerts are off in settings (/ft alerts on)." or ""))
+    else
+      say("alert on every catch: off.")
+    end
   elseif cmd == "junk" then
     if rest == "on" or rest == "off" then
       settings.includeJunk = (rest == "on")
@@ -352,6 +408,6 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if ns.SetDemo then ns.SetDemo(on) end
     say("demo data " .. (on and "on." or "off."))
   else
-    say("commands: /ft  (toggle)  |  config  |  cast off|doubleclick|key|both  |  session manual|idle|zone|zoneidle  |  autoloot on|off  |  junk on|off  |  icons on|off  |  auc on|off  |  demo on|off")
+    say("commands: /ft  (toggle)  |  config  |  cast off|doubleclick|key|both  |  session manual|idle|zone|zoneidle  |  autoloot on|off  |  alerts on|off|rare|epic  |  junk on|off  |  icons on|off  |  auc on|off  |  demo on|off")
   end
 end

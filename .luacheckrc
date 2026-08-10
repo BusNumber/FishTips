@@ -26,6 +26,7 @@ read_globals = {
   "GetNumLootItems", "GetLootSlotLink", "GetLootSlotInfo", "GetItemInfoInstant", "LootSlot",
   "IsFishingLoot",
   "C_Item", "HandleModifiedItemClick",  -- catch-list row icons + shift-click chat linking
+  "PlaySound", "SOUNDKIT",  -- rare-catch alert sound (UI.lua)
   "ITEM_QUALITY_COLORS", "STANDARD_TEXT_FONT", "UNKNOWN",
   "Settings", "GameTooltip", "StaticPopup_Show", "YES", "NO",
   "AddonCompartmentFrame",  -- tooltip anchor fallback for the compartment entry

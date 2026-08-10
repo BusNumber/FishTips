@@ -38,6 +38,11 @@ work will be declined.
 5. To debug casting, `/ft castdebug` prints the live cast state (mode, the resolved Fishing
    spell name, and the assigned keybind key) and, while on, logs when the double-click arms
    the cast — so you can tell a trigger-not-firing from a cast-not-casting. Also **dev-only**.
+6. To test catch alerts without waiting for a rare: `/ft alerttest` previews the delivery
+   (sound + chat line) without fishing, and `/ft alertall` makes **every** recorded catch
+   alert through the real loot pipeline — an in-memory override that is never saved, so it
+   clears at logout or `/reload` (it doesn't bypass the **Alert on rare catches** enable
+   checkbox, only the quality threshold). Both **dev-only**.
 
 Code conventions: the Lua files share the private addon table via the
 `local addonName, ns = ...` vararg. Keep the data/presentation split — new data sources
@@ -67,7 +72,8 @@ channel events, `LOOT_READY`/`LOOT_OPENED`/`LOOT_CLOSED`) through the addon's ow
 handlers. It asserts the design invariants: account rollup = Σ characters, cross-realm
 same-name characters stay distinct, the junk filter is consistent across every seam, each
 loot window is recorded exactly once (with one UI refresh), the fishing gate, mapID
-stamping, and the version-downgrade guard.
+stamping, the version-downgrade guard, the catch-alert notifier (one fire per window,
+payload merge, the threshold and enable gates), and the first-catch `isNew` derivation.
 
 `UI.lua` and `Casting.lua` are deliberately **not** loaded — rendering and secure-binding
 behavior can't be meaningfully stubbed; those claims belong on the in-game checklist
@@ -110,6 +116,35 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       by the addon.
 - [ ] If the CVar fallback is in use, the player's prior `autoLootDefault` is restored
       after fishing across `/reload`, logout, and a disconnect.
+
+### Alerts
+
+- [ ] Catching a **rare-or-better** fish plays the alert sound **exactly once per loot
+      window** (a window holding two rares = one sound) and prints **one clickable chat
+      line per item**. Judge the kit sound by ear (`SOUNDKIT.UI_EPICLOOT_TOAST`) — if it
+      grates or is inaudible at a typical SFX mix, swap the one-line `ALERT_SOUND`
+      constant in UI.lua (alternates are noted at the constant).
+- [ ] The sound plays on the **SFX channel**: audible with normal sound settings, silent
+      with the Sound Effects slider muted (that's by design — the alert respects the mix).
+- [ ] With **Alert threshold = Epic only**, a rare (blue) catch stays silent and an epic
+      alerts; `/ft alerts rare|epic` switches it live.
+- [ ] Alerts **never** open, move, or steal the stats window — including with the window
+      closed mid-fishing (close-beats-auto-open stays intact) and around an auto-hide.
+- [ ] Killing a mob or opening a chest right after fishing never alerts, even if the loot
+      is epic (only recorded fishing catches can alert).
+- [ ] `/ft alerttest` plays the sound and prints the line — with the alerts checkbox on
+      **and** off (it previews delivery, bypassing the setting on purpose).
+- [ ] `/ft alertall` makes a gray/common catch alert through the **real** pipeline (one
+      sound per loot window, one chat line per item, correct links); with the alerts
+      checkbox off it stays silent (the override drops only the quality threshold); and
+      after a logout or `/reload` the override is gone — the next common catch is silent
+      again with no cleanup step.
+- [ ] **"New!" marker:** the first-ever catch of a fish shows a small accent-colored
+      **New!** tag on its Session-view row; a fish with any prior lifetime history never
+      shows it; it disappears once a later session catches the same fish again. Lifetime
+      view never shows tags. The tag doesn't collide with a long (truncated) fish name —
+      check with icons on/off and Auctionator prices on (the longest demo name is the
+      layout stress test, but note demo rows themselves never show New!).
 
 ### Sessions
 
@@ -206,6 +241,9 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       **Auto-hide stats window** are nested under **Pause session when not fishing** and
       both gray out when it's unchecked. `/ft session manual|idle|zone|zoneidle` switches
       the mode.
+- [ ] The **Alerts** block renders: **Alert threshold** is nested under **Alert on rare
+      catches** and grays out when it's unchecked; `/ft alerts on|off|rare|epic` switches
+      both live.
 - [ ] **Auto-open when fishing** = Full window / Collapsed view / Disabled does the right thing
       on the next cast (and only when the window isn't already up).
 - [ ] Unchecking **Include junk items** (or `/ft junk off`) hides gray catches from the list
@@ -217,8 +255,8 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       restores them. Tooltips and shift-click linking work either way.
 - [ ] The native **Defaults** button resets every option (minimap button hides, cast mode
       reverts, auto-open returns to Full window, junk items shown, item icons shown,
-      Auctionator prices on, sessions back to After inactivity / 30m / pause on / 5m /
-      auto-hide on).
+      Auctionator prices on, alerts on with the Rare threshold, sessions back to After
+      inactivity / 30m / pause on / 5m / auto-hide on).
 
 ### Auctionator price overlay (on by default)
 

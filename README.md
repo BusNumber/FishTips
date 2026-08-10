@@ -35,6 +35,11 @@ is worth at auction, live, while you fish.
   auction price), and the footer and compact strip show a running **session total**. On by
   default (it only ever shows with Auctionator installed); turn it off under **Show Auctionator
   prices** or with `/ft auc off`.
+- **Never miss a great catch.** Reel in something **rare or better** and Fish & Tips plays a
+  short fanfare and drops the item link in chat — you fish by ear, it taps you on the shoulder
+  when the good one lands. Raise the bar to epic-only in options, or turn it off with
+  `/ft alerts off`. And the first time you ever catch a fish, its row in the session list
+  wears a quiet **New!** tag — no sound, no pop-up, just a nod.
 
 The stats live in a movable window you can toggle from a slash command or the minimap's
 **addon compartment** (plus an optional minimap button) — and it can **open itself when 
@@ -80,6 +85,7 @@ water to cast, and watch your catches auto-loot and log by location.
 - 🟢 Casting — keybind **and/or** double-right-click, chosen in options (off by default) — *working*
 - 🟢 Fishing-only auto-loot (on by default; toggle in options) — *working*
 - 🟢 Auctionator gold values for the session (on by default; shows only with Auctionator installed) — *working*
+- 🟢 Rare-catch alerts (sound + chat line, rare/epic threshold) and a **New!** tag on first-ever catches — *built*
 - ⬜ Auto-discard junk (sell or throw back gray catches) *(planned)*
 - ⬜ Auto-best-lure, gear/outfit swap, enhanced sound *(planned)*
 - ⬜ Gold / auction-house analytics per zone *(planned)*

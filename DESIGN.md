@@ -21,7 +21,9 @@ doc — if you're about to change behavior, check here first.
 > and an **Addon Compartment entry** (the default access path; the custom minimap button
 > is now opt-in, default off — see the API notes), and an **interactive catch list**
 > (item icons behind `listIcons`, hover tooltips, shift-click chat linking, mouse-wheel
-> scrolling past the six-row viewport — see *What it does* §2).
+> scrolling past the six-row viewport — see *What it does* §2), and **rare-catch alerts
+> with a first-catch "New!" marker** (a sound + a chat line when a rare-or-better catch
+> is recorded, and a quiet row tag on first-ever catches — see *What it does* §6).
 > A **LuaJIT test harness** (`tests/`, run in CI) asserts the
 > data-layer invariants out of game. Still roadmap: **junk auto-discard** (auto-selling or
 > throwing back gray catches — see Deferred/roadmap).
@@ -238,6 +240,47 @@ stays "the next cast brings it back"). The first suppressing close per login pri
 one-line chat hint pointing at `/ft` and the addon drawer — a player who only ever met the
 window through auto-open may not know either exists.
 
+### 6. Rare-catch alerts and the first-catch "New!" marker
+
+Fishing is played eyes-elsewhere, ears-on — and nothing (native or addon) celebrates the
+moment that makes it fun. The game has **no** quality-based catch alert and no generic
+"first time you caught this species" banner (only skill-ups, achievement toasts where
+fishing achievements exist, and collection toasts that fire on *learn*, not loot). The
+two halves of this feature have opposite noise profiles, so they get opposite treatments:
+
+- **Rare-catch alert** (`catchAlerts`, default on; `alertQuality` threshold `rare` |
+  `epic`, default rare). When a fishing loot window records a catch of quality ≥ the
+  threshold, the UI plays one kit sound (on the **SFX** channel, respecting the player's
+  mix) and prints **one chat line per item** with the clickable link — a persistent,
+  clickable record that works whether the window is up or not. **One sound per loot
+  window** no matter how many slots qualified (the payload merges by itemID), and the
+  delivery **never touches window visibility** — no force-show, no ownership flips — so
+  it can't fight auto-open suppression or auto-hide (§5). The gate lives in the **data
+  layer** (the includeJunk precedent): Core reads both settings live per window and only
+  fires the notifier when something qualifies; only successfully *recorded* slots can
+  alert, so the fishing gate excludes mob/chest loot for free. Rare+ catches are
+  genuinely infrequent, which is what makes a default-on sound safe.
+- **First-catch marker.** A catch never caught before gets a quiet accent-colored
+  **New!** tag on its session-list row — no sound, no toast, no chat line. This is
+  deliberate: "firsts" are inherently **bursty** (a fresh install has no history, so
+  *everything* is new; even a day-one user gets several firsts in every new zone), and
+  there is no API for "have I ever looted X" to backfill against. A silent tag makes the
+  burst harmless instead of patching it with opaque grace-period heuristics. Derivation
+  is display-time, per character: `isNew = (session count == lifetime count)` — session
+  records also write to lifetime, so equality means every catch of the item ever
+  happened this session. Only `GetSessionItems` sets the field, so the marker is
+  session-view-only by construction, and demo data never shows it (demo lifetime counts
+  dwarf its session counts). No setting: it has no footprint until a first catch lands.
+
+Both settings are additive account-wide (`== nil` default-filled, sanitized — **no
+`DB_VERSION` bump**), with a nested options block (the threshold dropdown grays out under
+the enable checkbox — a real dependency) and `/ft alerts on|off|rare|epic`. Two dev-only
+test hooks: `/ft alerttest` fires the notifier with a fake payload to audition the sound
+without fishing (it bypasses the Core gate on purpose — it exercises delivery, not
+policy), and `/ft alertall` drops the quality threshold to zero so every recorded catch
+alerts through the real pipeline (an in-memory `ns` flag, never a setting — it cannot
+survive a logout or `/reload`, and it never bypasses the enable checkbox).
+
 ## Architecture
 
 ```
@@ -394,6 +437,17 @@ The tracking write-path (see the WoW API notes) feeds the same store these seams
   once when the session goes idle (the pause grace elapses after the last cast with no new
   one). The UI subscribes to **auto-hide** an auto-opened surface; this must be able to
   *hide* one, which `FireRefresh` can't.
+- `ns.RegisterCatchAlert(fn)` / `ns.FireCatchAlert(items)` — fired at most **once per
+  fishing loot window** when it recorded at least one alert-worthy catch (`catchAlerts`
+  on, quality ≥ the `alertQuality` threshold — the gating lives in Core, like the
+  includeJunk filter). The **first notifier with a payload**: an array of
+  `{ itemID, name, link, quality, count }` merged by itemID, valid only for the duration
+  of the synchronous fire — subscribers must not retain it. The UI subscriber plays the
+  alert sound and prints the chat line(s); it deliberately never touches visibility.
+
+`ns.GetSessionItems` rows additionally carry **`isNew`** — true when this is the first-ever
+catch of the item for the character (session count == lifetime count; see *What it does*
+§6). Only this seam sets the field, which is what keeps the "New!" marker session-view-only.
 
 The loot reader does both jobs from one handler registered for `LOOT_READY` **and**
 `LOOT_OPENED` (whichever fires first wins, via a per-window guard cleared at `LOOT_CLOSED`;
@@ -625,6 +679,14 @@ awaiting in-game confirmation are flagged inline.
   guards in *What it does* §5. `autoOpen` is an account-wide
   setting (no `DB_VERSION` bump); the panel exposes it as a dropdown, and the old boolean
   `autoOpenOnFishing` is migrated to it (`true`→`"full"`, `false`→`"off"`) at load.
+- **Alert sound.** `PlaySound(soundKitID, channel)` — plain UI API, no library, not a
+  protected action (callable from the insecure alert subscriber, no taint surface). The
+  kit id is a file-local constant in UI.lua (`SOUNDKIT.UI_EPICLOOT_TOAST`, verified
+  present and in active use in the live Blizzard UI source) so the in-game sound pick is
+  a one-line swap; alternates noted at the constant. The channel is passed as **"SFX"
+  explicitly** — public docs disagree on the default (SFX vs Master), and the deliberate
+  choice is to respect the player's sound mix rather than punch through a muted SFX
+  slider. (Exact audibility/taste awaits the in-game pass; `/ft alerttest` auditions it.)
 - **Two clocks.** `GetTime()` is an uptime clock — it does not survive `/reload` — while
   `time()` is wall-clock epoch. The session model stamps both at every cast: live math runs
   on `GetTime`, and only `lastCastEpoch` crosses a reload (restore drops `lastCastAt`).
@@ -654,9 +716,10 @@ These plug in behind the existing seams without changing the UI layer:
 - **Fishing-skill display** — blocked-ish API (see gotchas); revisit if Blizzard exposes a
   journal/statistics API.
 - Auto-best-lure (secure button, prompt-not-silent), one-click gear/outfit swap
-  (`C_EquipmentSet`, out of combat), enhanced/forced sound while fishing, and rare-catch
-  alerts. (Gold/AH value: the **session price overlay shipped** — see *What it does* §4;
-  per-zone gold/hour and lifetime gold analytics remain future work on top of it.)
+  (`C_EquipmentSet`, out of combat), and enhanced/forced sound while fishing. (Gold/AH
+  value: the **session price overlay shipped** — see *What it does* §4; per-zone
+  gold/hour and lifetime gold analytics remain future work on top of it. Rare-catch
+  alerts **shipped** — see *What it does* §6.)
 - **Session history** — auto-end (§5) discards a closed session once fishing resumes; only
   the one-line chat summary survives. A "recent sessions" view (per-session tally, where,
   when) would plug in behind the seams by retaining the last N closed session structs in
