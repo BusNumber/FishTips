@@ -4,7 +4,7 @@ This document explains **what** Fish & Tips does and **why**, how the code is st
 and the WoW API landmines the implementation steps around. It is the **living** design
 doc — if you're about to change behavior, check here first.
 
-> **Status:** early release. **Retail only** (Midnight, 12.0.x). The API behaviors this
+> **Status:** early release. **Retail only** (Midnight, 12.1.x). The API behaviors this
 > document relies on are confirmed against the in-game acceptance checklist in
 > [CONTRIBUTING.md](CONTRIBUTING.md); anything not yet runtime-verified is called out inline.
 >
@@ -552,9 +552,11 @@ someone caught in a zone last month. So:
 
 ## WoW API notes (gotchas)
 
-Facts about the current API surface (Midnight, 12.0.x). Most are the reason a given design
+Facts about the current API surface (Midnight, 12.1.x). Most are the reason a given design
 choice looks the way it does — the load-bearing assumptions the design rests on. Any still
-awaiting in-game confirmation are flagged inline.
+awaiting in-game confirmation are flagged inline. Reviewed against the official 12.1.0 API
+changelog (an aura-security patch: secret aura values, forbidden script objects) — nothing
+the addon uses changed, so the 12.0.x findings below carry forward.
 
 - **Fishing state detection.** *Implemented* via `UNIT_SPELLCAST_CHANNEL_START` /
   `UNIT_SPELLCAST_CHANNEL_STOP` (Fishing is a channel) filtered to `unit == "player"` and
@@ -581,7 +583,7 @@ awaiting in-game confirmation are flagged inline.
   `GetNumLootItems` and reads each slot with `GetLootSlotLink` (nil for money → not
   tracked) + `GetLootSlotInfo` (name, quantity, quality); `GetItemInfoInstant(link)` gives
   the itemID (nil for currency → not tracked). All slots are recorded in one pass, then
-  **one** `FireRefresh` repaints the UI. (`IsFishingLoot()` behavior on 12.0.x fishing
+  **one** `FireRefresh` repaints the UI. (`IsFishingLoot()` behavior on 12.1.x fishing
   loot awaits the in-game pass; the heuristic keeps working regardless.)
 - **Catch *auto-loot*.** *Implemented.* The same handler, when the `autoLoot` setting is on
   **and the client isn't already native-auto-looting** (both loot events carry the client's
@@ -593,8 +595,10 @@ awaiting in-game confirmation are flagged inline.
   is the hardware event) — the standard insecure fast-loot pattern on current retail. No
   `ConfirmLootSlot` auto-confirm — fished loot isn't BoP, so the rare confirm dialog is
   left for the player. **Load-bearing in-game check:** confirm `LootSlot()` from the
-  handler loots fully, taint-free, on 12.0.7. **Fallback if it's ever blocked:** toggle the
-  `autoLootDefault` CVar on during the fishing window and restore it after.
+  handler loots fully, taint-free, on 12.1.x. **Fallback if it's ever blocked:** toggle the
+  `autoLootDefault` CVar on during the fishing window and restore it after (note: as of
+  12.1.0 the auto-loot setting is account-wide, so a botched restore would hit every
+  character — one more reason this stays a fallback).
 - **The cast is a secure *binding* (by name), not a button.** *Implemented (no world overlay, no
   action button).* For the Fishing profession spell on 12.0, a secure button silently no-ops no
   matter how it's configured — `type="spell"` (→ `CastSpellByID(131474/131476)` and
@@ -635,18 +639,21 @@ awaiting in-game confirmation are flagged inline.
   Click mirrors the minimap button: left → toggle the window, right → options. Because the
   compartment covers reachability, the custom minimap button is **opt-in** (`showMinimap`
   default off — flipped for fresh installs only; `applyDefaults` fills `== nil`, so an
-  existing user's stored `true` keeps their button). (Exact 12.0.x compartment behavior —
+  existing user's stored `true` keeps their button). (Exact 12.1.x compartment behavior —
   arg shapes, right-click delivery, tooltip anchor — awaits the in-game pass.)
 - **Zone resolution.** `GetRealZoneText()` / `GetSubZoneText()` for names, plus
   `C_Map.GetBestMapForUnit("player")` for a stable mapID — stamped on the zone and sub
   buckets at write time (see *DB schema*). **Log by the loot event, not by
   pool detection:** Midnight's Voidstorm "Oceanic Vortex" pools resist auto-detection but
   still produce loot, so tag the catch with whatever zone/subzone is readable rather than
-  dropping it.
+  dropping it. (Same policy for 12.1.0's Coiled Isle "Cursed Fishing" pools — their
+  pipeline behavior is unverified, but log-by-loot means catches record regardless.)
 - **"Secret Values" (`C_Secrets`, new in 12.0)** restrict combat-sensitive unit data
   (health/power/cooldowns/auras) on tainted paths. They do **not** touch loot, containers,
   CVars, or zone APIs — so the data side of this addon is unaffected. (12.0.7 additionally
-  made loot/money/rep/XP no longer secret.)
+  made loot/money/rep/XP no longer secret. 12.1.0 expanded secrets into aura data and unit
+  identity — still nothing loot-, item-, zone-, or cast-related, so the addon remains
+  unaffected.)
 - **Auctionator integration (optional, external).** The price overlay calls Auctionator's
   documented **public** integration API: `Auctionator.API.v1.GetAuctionPriceByItemID(callerID,
   itemID)`, which returns the market price in **copper** (or `nil` when there's no scanned data
@@ -658,7 +665,7 @@ awaiting in-game confirmation are flagged inline.
   another (indented), so the checkbox stays top-level and is simply inert (`PricingActive` false →
   nothing renders), with the requirement stated in its tooltip. We consume only the published API; the
   signature/units come from its public documentation. (Not yet
-  runtime-confirmed on 12.0.x.) Optional future hook: `RegisterForDBUpdate` to
+  runtime-confirmed on 12.1.x.) Optional future hook: `RegisterForDBUpdate` to
   repaint after an AH scan; deferred (prices rarely change mid-fishing).
 - **Fishing skill is awkward** (`GetProfessions` / `GetProfessionInfo`; the fishing journal
   panel API is effectively blocked, so other authors brute-force skill lookups). This is
