@@ -481,10 +481,15 @@ local function renderItems(body, p, data, y)
   local priced = data.mode == "session" and ns.PricingActive and ns.PricingActive()
   local s = ns.GetSettings and ns.GetSettings()
   local icons = not (s and s.listIcons == false)  -- nil settings => the default (on)
-  -- Bars and share % stay relative to the WHOLE list, not the visible window.
-  local maxCount = items[1].count or 1
-  local total = 0
-  for i = 1, #items do total = total + (items[i].count or 0) end
+  -- Bars and share % stay relative to the WHOLE list, not the visible window. The bar
+  -- scale is the list's largest count wherever it sits -- with junk sorted last, the
+  -- top-count row is no longer guaranteed to be row 1.
+  local maxCount, total = 1, 0
+  for i = 1, #items do
+    local c = items[i].count or 0
+    total = total + c
+    if c > maxCount then maxCount = c end
+  end
   local shown = math.min(#items, MAX_LIST_ROWS)
   for i = off + 1, off + shown do
     y = renderRow(body, p, items[i], y, maxCount, total, priced, icons)

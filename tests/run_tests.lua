@@ -846,6 +846,170 @@ test("pause_notifier_fires_with_pause_setting_off", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- Catch-list ordering (the item seams' sort contract)
+-- ---------------------------------------------------------------------------
+
+test("location_items_nonjunk_count_desc_baseline", function()
+  -- Baseline pin: non-junk rows come back count-desc from GetLocationItems. This
+  -- must hold before AND after any junk-grouping change (within-group order).
+  local key = "Tester-TestRealm"
+  local ns = loadAddon({ db = { version = 1, chars = {
+    [key] = lifeWith(0, "Zone1", "SubA", {
+      [201] = { count = 4, quality = 3, name = "Blue" },
+      [202] = { count = 9, quality = 1, name = "White" },
+      [203] = { count = 2, quality = 2, name = "Green" },
+      [204] = { count = 7, quality = 1, name = "White2" },
+    }),
+  } } })
+  local items = ns.GetLocationItems(key, "lifetime", "Zone1", "SubA")
+  assertEq(#items, 4)
+  assertEq(items[1].itemID, 202, "highest count first")
+  assertEq(items[2].itemID, 204)
+  assertEq(items[3].itemID, 201)
+  assertEq(items[4].itemID, 203, "lowest count last")
+end)
+
+test("session_items_nonjunk_count_desc_baseline", function()
+  -- Same pin for the whole-session list.
+  local ns, S = loadFishing()
+  local key = ns.CharKey()
+  catchFish(S, 301, 3)
+  catchFish(S, 302, 8)
+  catchFish(S, 303, 5)
+  local items = ns.GetSessionItems(key)
+  assertEq(#items, 3)
+  assertEq(items[1].itemID, 302, "highest count first")
+  assertEq(items[2].itemID, 303)
+  assertEq(items[3].itemID, 301, "lowest count last")
+end)
+
+test("nil_quality_resolves_to_common_baseline", function()
+  -- Legacy records may lack a quality; resolveItem defaults it to 1 (non-junk) on
+  -- the way out of both seams, and the junk filter treats it as non-junk too. The
+  -- sort's quality == 0 test leans on this.
+  local key = "Tester-TestRealm"
+  local ns = loadAddon({ db = { version = 1, chars = {
+    [key] = lifeWith(0, "Zone1", "SubA", {
+      [401] = { count = 2, name = "NoQuality" },
+    }),
+  } } })
+  local items = ns.GetLocationItems(key, "lifetime", "Zone1", "SubA")
+  assertEq(items[1].quality, 1, "nil quality resolves to common")
+  ns.GetSettings().includeJunk = false
+  assertEq(#ns.GetLocationItems(key, "lifetime", "Zone1", "SubA"), 1,
+    "a nil-quality row is non-junk to the filter")
+end)
+
+-- Shared seed for the junk-sort tests: junk holds the GLOBAL max count (the crowding
+-- case the feature exists for), a second junk, and two non-junk rows.
+local function junkSortWorld()
+  local key = "Tester-TestRealm"
+  local ns = loadAddon({ db = { version = 1, chars = {
+    [key] = lifeWith(0, "Zone1", "SubA", {
+      [501] = { count = 50, quality = 0, name = "Junk50" },
+      [502] = { count = 20, quality = 0, name = "Junk20" },
+      [503] = { count = 10, quality = 1, name = "Fish10" },
+      [504] = { count = 5,  quality = 3, name = "Fish5" },
+    }),
+  } } })
+  return ns, key
+end
+
+test("junk_sorts_below_catches_location", function()
+  -- Default on: every non-junk above every junk, count-desc within each group --
+  -- even when a junk row holds the list's top count.
+  local ns, key = junkSortWorld()
+  local items = ns.GetLocationItems(key, "lifetime", "Zone1", "SubA")
+  assertEq(#items, 4)
+  assertEq(items[1].itemID, 503, "non-junk group first, count-desc")
+  assertEq(items[2].itemID, 504)
+  assertEq(items[3].itemID, 501, "junk group last, count-desc within it")
+  assertEq(items[4].itemID, 502)
+end)
+
+test("junk_sorts_below_catches_session", function()
+  local ns, S = loadFishing()
+  local key = ns.CharKey()
+  catchFish(S, 601, 9, 0)  -- junk, top count
+  catchFish(S, 602, 2, 1)
+  local items = ns.GetSessionItems(key)
+  assertEq(#items, 2)
+  assertEq(items[1].itemID, 602, "non-junk above the higher-count junk")
+  assertEq(items[2].itemID, 601)
+end)
+
+test("junk_sort_boundary_tie_nonjunk_first", function()
+  -- A count tie across the junk boundary resolves deterministically: non-junk first.
+  local key = "Tester-TestRealm"
+  local ns = loadAddon({ db = { version = 1, chars = {
+    [key] = lifeWith(0, "Zone1", "SubA", {
+      [701] = { count = 5, quality = 0, name = "Junk5" },
+      [702] = { count = 5, quality = 1, name = "Fish5" },
+    }),
+  } } })
+  local items = ns.GetLocationItems(key, "lifetime", "Zone1", "SubA")
+  assertEq(items[1].itemID, 702, "non-junk wins the cross-boundary tie")
+  assertEq(items[2].itemID, 701)
+end)
+
+test("junk_sort_setting_off_restores_count_desc", function()
+  local ns, key = junkSortWorld()
+  ns.GetSettings().sortJunkLast = false
+  local items = ns.GetLocationItems(key, "lifetime", "Zone1", "SubA")
+  assertEq(items[1].itemID, 501, "pure count-desc with the setting off")
+  assertEq(items[2].itemID, 502)
+  assertEq(items[3].itemID, 503)
+  assertEq(items[4].itemID, 504)
+end)
+
+test("junk_sort_inert_when_junk_hidden", function()
+  -- The nesting's truthfulness claim, data-layer half: with junk hidden there are no
+  -- junk rows to order, so the sort setting has no observable effect.
+  local ns, key = junkSortWorld()
+  ns.GetSettings().includeJunk = false
+  local items = ns.GetLocationItems(key, "lifetime", "Zone1", "SubA")
+  assertEq(#items, 2, "junk filtered out entirely")
+  assertEq(items[1].itemID, 503, "survivors still count-desc")
+  assertEq(items[2].itemID, 504)
+end)
+
+test("junk_sort_setting_sanitized", function()
+  local ns = loadAddon({ db = { version = 1, chars = {}, settings = { sortJunkLast = "garbage" } } })
+  assertEq(ns.GetSettings().sortJunkLast, true, "type garbage falls back to the default")
+  local ns2 = loadAddon({ db = { version = 1, chars = {}, settings = { sortJunkLast = false } } })
+  assertEq(ns2.GetSettings().sortJunkLast, false, "persisted false survives the == nil fill")
+end)
+
+test("junk_sort_slash_toggle", function()
+  local ns, key = junkSortWorld()
+  local refreshes = 0
+  ns.RegisterRefresh(function() refreshes = refreshes + 1 end)
+  _G.SlashCmdList["FISHTIPS"]("junksort off")
+  assertEq(ns.GetSettings().sortJunkLast, false, "slash off writes the setting")
+  assertEq(refreshes, 1, "one refresh per toggle")
+  assertEq(ns.GetLocationItems(key, "lifetime", "Zone1", "SubA")[1].itemID, 501)
+  _G.SlashCmdList["FISHTIPS"]("junksort on")
+  assertEq(ns.GetSettings().sortJunkLast, true, "slash on writes the setting")
+  assertEq(refreshes, 2)
+  assertEq(ns.GetLocationItems(key, "lifetime", "Zone1", "SubA")[1].itemID, 503)
+end)
+
+test("nil_quality_sorts_as_non_junk", function()
+  -- Legacy nil-quality records resolve to quality 1, so they sort with the non-junk
+  -- group -- above junk even at a fraction of its count.
+  local key = "Tester-TestRealm"
+  local ns = loadAddon({ db = { version = 1, chars = {
+    [key] = lifeWith(0, "Zone1", "SubA", {
+      [801] = { count = 50, quality = 0, name = "Junk50" },
+      [802] = { count = 1, name = "LegacyNoQuality" },
+    }),
+  } } })
+  local items = ns.GetLocationItems(key, "lifetime", "Zone1", "SubA")
+  assertEq(items[1].itemID, 802, "nil-quality row sorts as non-junk")
+  assertEq(items[2].itemID, 801)
+end)
+
+-- ---------------------------------------------------------------------------
 -- Runner
 -- ---------------------------------------------------------------------------
 local failed = 0

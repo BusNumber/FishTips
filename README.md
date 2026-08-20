@@ -18,10 +18,12 @@ is worth at auction, live, while you fish.
   **current-session** and **lifetime** totals, **per character** plus an account-wide
   rollup — and a casts/catch-per-hour readout. In the catch list, every fish shows its 
   icon, hovering shows the item tooltip, shift-click links it in chat, and the mouse 
-  wheel scrolls the list. Gray junk catches can be hidden from the stats with one 
-  toggle (shown by default — `/ft junk off` or the **Include junk items** option); 
-  they keep being tracked either way. Prefer text-only rows? `/ft icons off` (or 
-  the **Show item icons** option) hides the icons.
+  wheel scrolls the list. Gray junk sorts to the bottom of the list so real catches 
+  stay on top (on by default — **Sort junk below real catches** or `/ft junksort off`), 
+  or can be hidden from the stats entirely with one toggle (shown by default — 
+  `/ft junk off` or the **Include junk items** option); it keeps being tracked either 
+  way. Prefer text-only rows? `/ft icons off` (or the **Show item icons** option) 
+  hides the icons.
 - **Fishing session management.** The session view shows everything you've caught this
   outing, **wherever** you caught it — hop between fishing pools across a whole zone (or
   three) and the list keeps up. The **fish/hour timer pauses** when you stop fishing, so an

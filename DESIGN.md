@@ -23,7 +23,9 @@ doc — if you're about to change behavior, check here first.
 > (item icons behind `listIcons`, hover tooltips, shift-click chat linking, mouse-wheel
 > scrolling past the six-row viewport — see *What it does* §2), and **rare-catch alerts
 > with a first-catch "New!" marker** (a sound + a chat line when a rare-or-better catch
-> is recorded, and a quiet row tag on first-ever catches — see *What it does* §6).
+> is recorded, and a quiet row tag on first-ever catches — see *What it does* §6), and
+> **junk-last list ordering** (`sortJunkLast`, default on — gray catches group below
+> every real catch in the list; nested under Include junk items — see *What it does* §2).
 > A **LuaJIT test harness** (`tests/`, run in CI) asserts the
 > data-layer invariants out of game. Still roadmap: **junk auto-discard** (auto-selling or
 > throwing back gray catches — see Deferred/roadmap).
@@ -106,7 +108,9 @@ page down; at the end it flips to "Back to top". The scroll offset is UI-transie
 resets when the list itself is replaced (view mode, Lifetime scope, or location change),
 clamps when the list shrinks, and is never persisted — auto-hide never resets it, so an
 auto-hidden window comes back where the player left off. Bars and share % stay relative to
-the **whole** list, not the visible slice. `listIcons` is an additive account-wide boolean
+the **whole** list, not the visible slice — the bar scale is the list's largest count
+wherever it sits (with junk sorted last, below, the top-count row is not necessarily row
+one). `listIcons` is an additive account-wide boolean
 like `includeJunk` below (`== nil` default-filled, sanitized to a boolean — **no
 `DB_VERSION` bump**), toggled by the "Show item icons" checkbox or `/ft icons on|off`;
 the tooltip and chat-link behaviors are always on — they have no visual footprint until
@@ -119,6 +123,18 @@ back on restores the history. The filter is **display-time only**: it lives in t
 (below), nothing in the write-path or DB schema changes, and so it does **not** bump
 `DB_VERSION` (additive boolean, `== nil` default-filled, sanitized to a boolean). Junk is just
 `quality == 0` (already stored per catch); items with no recorded quality count as non-junk.
+
+With junk shown, the **`sortJunkLast`** setting (default on) completes the "visibly
+recedes" treatment: gray catches — often the most numerous, and able to crowd real fish
+out of the six-row viewport in a pure count order — **group below every non-junk row**,
+count-desc within each group. The ordering lives in the item seams' single shared sort
+(`sortItems`, the same one-place discipline as the filter), is **display-time only**, and
+is another additive account-wide boolean (`== nil` default-filled, sanitized — **no
+`DB_VERSION` bump**), toggled by the "Sort junk below real catches" checkbox or
+`/ft junksort on|off`. The checkbox is **nested under "Include junk items"** and grays out
+when it's unchecked — a truthful gray-out (with junk hidden there are no junk rows to
+order; the `alertQuality` precedent, not the not-nested Auctionator one). Bars and share %
+already read the whole list, so nothing else moves.
 
 ### 3. Fishing-only auto-loot — the *same* mechanism as tracking
 This is the key design insight. When fishing loot becomes available, Fish & Tips reads
@@ -393,9 +409,10 @@ can't be broken by a render path):
 - `ns.GetScopes()` → ordered `{ key, name }` list, ending in `{ key = "account", name = "Warband" }`
 - `ns.GetTotals(scope, mode)` → `{ casts, catches, ratePerHour, elapsed }` (`mode` = `"session"` | `"lifetime"`)
 - `ns.GetZoneTotals(scope, mode)` → catches-desc `{ {zone, catches}, … }`
-- `ns.GetLocationItems(scope, mode, zone, subZone)` → count-desc `{ {itemID, name, link, quality, count}, … }`
-- `ns.GetSessionItems(scope)` → the same row shape, but the **whole session** merged across
-  every zone/sub — the Session view's catch list (see *What it does* §2/§5)
+- `ns.GetLocationItems(scope, mode, zone, subZone)` → `{ {itemID, name, link, quality, count}, … }`,
+  count-desc — with junk grouped last per `sortJunkLast` (see *What it does* §2)
+- `ns.GetSessionItems(scope)` → the same row shape and order, but the **whole session**
+  merged across every zone/sub — the Session view's catch list (see *What it does* §2/§5)
 - `ns.GetSessionScope()` → the scope that owns the live session (the current character)
 - `ns.IsSessionIdle()` → `true` when the session is paused right now (no cast yet, or the
   pause grace has elapsed since the last one; `false` mid-channel). Mirrors the pause
@@ -404,8 +421,10 @@ can't be broken by a render path):
 The catch-counting seams (`GetTotals`, `GetZoneTotals`, `GetLocationItems`,
 `GetSessionItems`) apply the `includeJunk` display filter here, in one place: `sumItems`
 (shared by the totals and zone rollups) and the item-list seams skip quality-0 items when
-`includeJunk` is off, so the list and every total stay consistent. Filtering lives in the
-data layer, not the UI.
+`includeJunk` is off, so the list and every total stay consistent. Ordering follows the
+same one-place discipline: both item seams sort through the shared `sortItems` (count-desc;
+junk grouped last per `sortJunkLast`), so the two lists can never drift apart. Filtering
+and ordering live in the data layer, not the UI.
 
 The optional Auctionator price overlay adds three read-only pricing seams (also data layer —
 the UI never touches Auctionator):

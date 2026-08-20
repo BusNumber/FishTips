@@ -5,6 +5,14 @@ All notable changes to Fish & Tips are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-08-19
+
+### Added
+
+- **Junk sorts below real catches.** With junk shown, gray catches now group at the
+  bottom of the catch list, so the fish you care about stay on top. You can revert to
+  the old behavior in settings.
+
 ## [1.4.1] - 2026-08-12
 
 Compatibility release for patch 12.1.0.
@@ -118,6 +126,7 @@ Initial public release. For **Midnight, patch 12.0.7** (retail).
 - **Movable stats window** with a Session/Lifetime toggle and a character/Warband scope selector,
   and a **compact strip**.
 
+[1.5.0]: https://github.com/BusNumber/FishTips/releases/tag/v1.5.0
 [1.4.1]: https://github.com/BusNumber/FishTips/releases/tag/v1.4.1
 [1.4.0]: https://github.com/BusNumber/FishTips/releases/tag/v1.4.0
 [1.3.0]: https://github.com/BusNumber/FishTips/releases/tag/v1.3.0

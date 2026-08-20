@@ -268,6 +268,15 @@ local function junkHidden()
   return s ~= nil and s.includeJunk == false
 end
 
+-- Display-time ordering: when the sortJunkLast setting is on (the default), gray
+-- (quality-0) catches group below every non-junk row in the item lists. Nil-settings-safe,
+-- default ON -- inverse polarity of junkHidden: that one is "hidden only on an explicit
+-- false"; this one is "sorted last unless an explicit false".
+local function junkSortedLast()
+  local s = ns.GetSettings and ns.GetSettings()
+  return s == nil or s.sortJunkLast ~= false
+end
+
 local function sumItems(items)
   local n = 0
   if items then
@@ -373,6 +382,20 @@ local function resolveItem(m)
   return m
 end
 
+-- One sort for both item seams (same one-place doctrine as sumItems). Count-desc;
+-- with sortJunkLast on, quality-0 rows group below every non-junk row, count-desc
+-- within each group. Display-time only -- nothing in the write path changes.
+local function sortItems(list)
+  local junkLast = junkSortedLast()
+  table.sort(list, function(a, b)
+    if junkLast then
+      local aj, bj = a.quality == 0, b.quality == 0
+      if aj ~= bj then return bj end
+    end
+    return a.count > b.count
+  end)
+end
+
 function ns.GetLocationItems(scope, mode, zone, sub)
   local merged = {}
   local hide = junkHidden()
@@ -397,12 +420,12 @@ function ns.GetLocationItems(scope, mode, zone, sub)
   for _, m in pairs(merged) do
     list[#list + 1] = resolveItem(m)
   end
-  table.sort(list, function(a, b) return a.count > b.count end)
+  sortItems(list)
   return list
 end
 
 -- Whole-session catch list: everything recorded this session, across all zones/subs,
--- merged by itemID (count-desc, same row shape as GetLocationItems). The Session view
+-- merged by itemID (sortItems order, same row shape as GetLocationItems). The Session view
 -- renders this -- a pool-hunter's list must not empty out when they fly to the next
 -- pool; location filtering stays a Lifetime-view concern.
 function ns.GetSessionItems(scope)
@@ -457,7 +480,7 @@ function ns.GetSessionItems(scope)
     m.isNew = m.count == (lifeCounts[itemID] or 0)
     list[#list + 1] = resolveItem(m)
   end
-  table.sort(list, function(a, b) return a.count > b.count end)
+  sortItems(list)
   return list
 end
 
@@ -529,7 +552,9 @@ end
 -- shows live AH prices in demo mode. Qualities confirmed in-game: Lynxfish /
 -- Arcane Wyrmfish / Sin'dorei Swarmer common, Shimmersiren / Tender Lumifin uncommon,
 -- Eversong Trout rare. The gray junk entry uses a placeholder id (vendor trash has no
--- AH price -> renders "?") and only exists to exercise the includeJunk filter.
+-- AH price -> renders "?") and only exists to exercise the includeJunk filter and the
+-- junk-last sort (its session count tops the list, the stress case for both the sort
+-- and the bar scale; session != lifetime count so demo never shows a "New!" tag).
 -- ---------------------------------------------------------------------------
 ns.demo = {
   sessionElapsed = 900,
@@ -544,6 +569,7 @@ ns.demo = {
           ["Voidstorm"] = { subs = { ["Oceanic Vortex"] = { items = {
             [238378] = { name = "Shimmersiren",      quality = 2, count = 421 },
             [238366] = { name = "Lynxfish",          quality = 1, count = 388 },
+            [990001] = { name = "Tangled Fishing Line", quality = 0, count = 350 },
             [238371] = { name = "Arcane Wyrmfish",   quality = 1, count = 305 },
             [238365] = { name = "Sin'dorei Swarmer", quality = 1, count = 142 },
             [238374] = { name = "Tender Lumifin",    quality = 2, count = 64 },
@@ -565,6 +591,7 @@ ns.demo = {
         casts = 78,
         zones = {
           ["Voidstorm"] = { subs = { ["Oceanic Vortex"] = { items = {
+            [990001] = { name = "Tangled Fishing Line", quality = 0, count = 44 },
             [238366] = { name = "Lynxfish",          quality = 1, count = 31 },
             [238378] = { name = "Shimmersiren",      quality = 2, count = 23 },
             [238371] = { name = "Arcane Wyrmfish",   quality = 1, count = 19 },

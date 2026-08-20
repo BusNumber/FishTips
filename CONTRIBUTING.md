@@ -73,7 +73,8 @@ handlers. It asserts the design invariants: account rollup = Σ characters, cros
 same-name characters stay distinct, the junk filter is consistent across every seam, each
 loot window is recorded exactly once (with one UI refresh), the fishing gate, mapID
 stamping, the version-downgrade guard, the catch-alert notifier (one fire per window,
-payload merge, the threshold and enable gates), and the first-catch `isNew` derivation.
+payload merge, the threshold and enable gates), the first-catch `isNew` derivation, and
+the junk-last list ordering (non-junk above junk, count-desc within each group).
 
 `UI.lua` and `Casting.lua` are deliberately **not** loaded — rendering and secure-binding
 behavior can't be meaningfully stubbed; those claims belong on the in-game checklist
@@ -144,7 +145,9 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       shows it; it disappears once a later session catches the same fish again. Lifetime
       view never shows tags. The tag doesn't collide with a long (truncated) fish name —
       check with icons on/off and Auctionator prices on (the longest demo name is the
-      layout stress test, but note demo rows themselves never show New!).
+      layout stress test, but note demo rows themselves never show New!). A first-ever
+      **gray** catch's tag now sits at the list bottom (junk sorts last) — on a >6-row
+      list, confirm it renders when scrolled to.
 
 ### Sessions
 
@@ -250,13 +253,23 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       **and** the totals/zone chart immediately (no `/reload`); re-checking shows them again.
       A gray catch is still tracked while hidden (visible again when re-enabled), and the count
       stays correct.
+- [ ] **Sort junk below real catches** renders indented under **Include junk items** and
+      grays out when Include junk is unchecked — truthfully: with junk hidden there is
+      nothing gray to order. Re-checking the parent re-enables it live.
+- [ ] With junk shown and the option on (the default), the most-numerous gray still lists
+      **below** every non-junk catch, count order preserved within each group; toggling the
+      checkbox or `/ft junksort on|off` reorders **immediately** (no `/reload`), and the
+      scroll offset survives the reorder (clamping if the list shrinks).
+- [ ] **Bar overflow:** when a gray holds the list's top count and sits at the bottom, no
+      row's frequency bar escapes its track — the widest bar is the bottom gray's (check
+      with `/ft demo on`, Session view: Tangled Fishing Line tops the counts there).
 - [ ] Unchecking **Show item icons** (or `/ft icons off`) removes the icons immediately and
       the rows return to the exact pre-icon layout (full-width name and bar); re-checking
       restores them. Tooltips and shift-click linking work either way.
 - [ ] The native **Defaults** button resets every option (minimap button hides, cast mode
-      reverts, auto-open returns to Full window, junk items shown, item icons shown,
-      Auctionator prices on, alerts on with the Rare threshold, sessions back to After
-      inactivity / 30m / pause on / 5m / auto-hide on).
+      reverts, auto-open returns to Full window, junk items shown and sorted below real
+      catches, item icons shown, Auctionator prices on, alerts on with the Rare threshold,
+      sessions back to After inactivity / 30m / pause on / 5m / auto-hide on).
 
 ### Auctionator price overlay (on by default)
 

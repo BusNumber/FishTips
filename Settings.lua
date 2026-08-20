@@ -27,6 +27,7 @@ local DEFAULTS = {
   sessionGraceMinutes = 5,  -- per-gap cap on counted time; also the auto-hide delay
   autoHide = true,          -- hide an AUTO-OPENED surface when the session pauses
   includeJunk = true,       -- show gray (quality-0) catches in the stats window + totals
+  sortJunkLast = true,      -- with junk shown, sort gray catches below every non-junk catch
   listIcons = true,         -- show item icons in the stats window catch list
   auctionatorPrices = true, -- show session gold values from Auctionator (only renders if it's installed)
   priceDetail = "gold",     -- price precision: "gold" | "goldsilver" | "all" (picker deferred; pinned to gold)
@@ -84,6 +85,7 @@ local function applyDefaults(s)
   if type(s.sessionPause) ~= "boolean" then s.sessionPause = DEFAULTS.sessionPause end
   if type(s.autoHide) ~= "boolean" then s.autoHide = DEFAULTS.autoHide end
   if type(s.includeJunk) ~= "boolean" then s.includeJunk = DEFAULTS.includeJunk end
+  if type(s.sortJunkLast) ~= "boolean" then s.sortJunkLast = DEFAULTS.sortJunkLast end
   if type(s.listIcons) ~= "boolean" then s.listIcons = DEFAULTS.listIcons end
   if type(s.auctionatorPrices) ~= "boolean" then s.auctionatorPrices = DEFAULTS.auctionatorPrices end
   -- The precision picker isn't shipped yet (its options control is hidden), so pin everyone to
@@ -249,9 +251,17 @@ function RegisterPanel()
   Settings.SetOnValueChangedCallback(addonName .. "_showMinimap", function()
     if ns.UI and ns.UI.SetMinimapShown then ns.UI.SetMinimapShown(settings.showMinimap) end
   end)
-  Settings.CreateCheckbox(category, Register("includeJunk", L["Include junk items"]),
+  local junkInit = Settings.CreateCheckbox(category, Register("includeJunk", L["Include junk items"]),
     L["Show gray (junk) catches in the stats window and totals."])
   Settings.SetOnValueChangedCallback(addonName .. "_includeJunk", function()
+    if ns.FireRefresh then ns.FireRefresh() end
+  end)
+  local junkSortInit = Settings.CreateCheckbox(category, Register("sortJunkLast", L["Sort junk below real catches"]),
+    L["Keep gray (junk) catches at the bottom of the catch list, below everything else you caught."])
+  -- A real dependency: with junk hidden there are no junk rows to order, so the
+  -- gray-out tells the truth (the alertQuality precedent, not the Auctionator one).
+  junkSortInit:SetParentInitializer(junkInit, function() return settings.includeJunk end)
+  Settings.SetOnValueChangedCallback(addonName .. "_sortJunkLast", function()
     if ns.FireRefresh then ns.FireRefresh() end
   end)
   Settings.CreateCheckbox(category, Register("listIcons", L["Show item icons"]),
@@ -379,6 +389,14 @@ SlashCmdList["FISHTIPS"] = function(msg)
     else
       say("junk: on | off  (currently " .. (settings.includeJunk ~= false and "on" or "off") .. ")")
     end
+  elseif cmd == "junksort" then
+    if rest == "on" or rest == "off" then
+      settings.sortJunkLast = (rest == "on")
+      if ns.FireRefresh then ns.FireRefresh() end
+      say((L["junk sort %s."]):format(rest))
+    else
+      say("junksort: on | off  (currently " .. (settings.sortJunkLast ~= false and "on" or "off") .. ")")
+    end
   elseif cmd == "icons" then
     if rest == "on" or rest == "off" then
       settings.listIcons = (rest == "on")
@@ -408,6 +426,6 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if ns.SetDemo then ns.SetDemo(on) end
     say("demo data " .. (on and "on." or "off."))
   else
-    say("commands: /ft  (toggle)  |  config  |  cast off|doubleclick|key|both  |  session manual|idle|zone|zoneidle  |  autoloot on|off  |  alerts on|off|rare|epic  |  junk on|off  |  icons on|off  |  auc on|off  |  demo on|off")
+    say("commands: /ft  (toggle)  |  config  |  cast off|doubleclick|key|both  |  session manual|idle|zone|zoneidle  |  autoloot on|off  |  alerts on|off|rare|epic  |  junk on|off  |  junksort on|off  |  icons on|off  |  auc on|off  |  demo on|off")
   end
 end
