@@ -25,7 +25,13 @@ doc — if you're about to change behavior, check here first.
 > with a first-catch "New!" marker** (a sound + a chat line when a rare-or-better catch
 > is recorded, and a quiet row tag on first-ever catches — see *What it does* §6), and
 > **junk-last list ordering** (`sortJunkLast`, default on — gray catches group below
-> every real catch in the list; nested under Include junk items — see *What it does* §2).
+> every real catch in the list; nested under Include junk items — see *What it does* §2),
+> and the **v1.6.0 gold trio**: an **honest footer** (the stat bar shows the current
+> view's totals — lifetime renders bare casts + catches, no fabricated rate or minutes —
+> see *What it does* §2), **gold/hour in the price overlay** (`value (rate 🪙/hr)` in the
+> footer + compact strip, and the session-end summary gains the closing session's value —
+> see *What it does* §4), and **value-based catch alerts** (`valueAlerts`, default off —
+> a second, independent alert path on unit market price — see *What it does* §6).
 > A **LuaJIT test harness** (`tests/`, run in CI) asserts the
 > data-layer invariants out of game. Still roadmap: **junk auto-discard** (auto-selling or
 > throwing back gray catches — see Deferred/roadmap).
@@ -99,8 +105,15 @@ catch list's scope differs by view: **Session lists the whole session** — ever
 this session, merged across locations, so a pool-hunter's list doesn't empty out when they
 fly to the next pool — while **Lifetime filters to the current zone/subzone**. A
 **location header** names the current zone/subzone (catch counts are carried by the
-catch list and the **footer stat bar** — `casts · catches · /hr · minutes` — so the
-header itself stays uncluttered).
+catch list and the **footer stat bar**, so the header itself stays uncluttered). The
+footer shows **the current view's totals**: in the Session view `casts · catches · /hr ·
+minutes` (plus the price overlay's right block, §4), in the Lifetime view bare
+`casts · catches` — there is **no lifetime clock**, so a lifetime rate or minutes would
+be fabrications, and the "never lie in the UI" rule says they simply don't render. No
+"Session/Lifetime" label is added to the strip: the view toggle directly above names the
+view, and the footer now agrees with it. (Before v1.6.0 the footer always showed session
+numbers in both views — the fix also stopped `ns.GetTotals` returning a live-session
+`elapsed` on lifetime queries.)
 
 The list shows **six rows and scrolls**: the mouse wheel anywhere over the window moves a
 windowed view into the full list, and the "+N more" line is a **live control** — click to
@@ -167,10 +180,17 @@ renders when Auctionator is installed, so it's harmless for everyone else) that 
 much have I made this session?" while you're still fishing. When on **and Auctionator is
 installed**, the stats window shows, **for the current session only**: next to each fish, the
 value of your catch — `count × unit auction price` — in parentheses (`N 🪙`, or `? 🪙` when
-Auctionator has no data for that item); and a right-aligned **session total** (whole session,
-all zones) in the footer stat bar and the compact strip. The number leads, the gold icon
-trails (`N 🪙`). Prices are **floored to whole gold** (silver/copper dropped —
-`floor(copper / 10000)`).
+Auctionator has no data for that item); and a right-aligned **session total with
+gold/hour** (whole session, all zones) in the footer stat bar and the compact strip:
+`total 🪙 (rate 🪙/hr)`. The number leads, the gold icon trails (`N 🪙`). Prices are
+**floored to whole gold** (silver/copper dropped — `floor(copper / 10000)`). The rate is
+`session value ÷ active time` — the same active-time clock as fish/hour (§5), so pauses
+don't decay it — and before the first cast (clock at zero) the parenthetical simply
+doesn't render: no divide-by-zero spikes, no fabricated rate. The **session-end chat
+summary** (§5) also gains the closing session's value (`, ~Ng`) when pricing is active —
+for the gold-farm audience that's the number the summary used to omit; it stays plain
+text (no icon), prints only when the value floors to at least 1g, and is demo-guarded so
+a real session's summary can never print a demo-derived figure.
 
 > **Scaffolded but deferred:** a precision picker (`priceDetail` = `gold` | `goldsilver` | `all`)
 > is partly in place — the UI's single `goldStr` money-format helper already branches on the
@@ -287,15 +307,39 @@ two halves of this feature have opposite noise profiles, so they get opposite tr
   happened this session. Only `GetSessionItems` sets the field, so the marker is
   session-view-only by construction, and demo data never shows it (demo lifetime counts
   dwarf its session counts). No setting: it has no footprint until a first catch lands.
+- **Value-based alert** (`valueAlerts` default **off**; `alertValueGold` threshold,
+  10–1000g slider, default 100g). Rare-quality ≠ valuable — the most sellable Midnight
+  fish are often white-quality — so this is a **second, independent path through the
+  same alert pipeline**: a recorded catch whose **unit** market price (from the pricing
+  seams, §4) meets the threshold alerts whatever its quality. Unit price, never the
+  stack total, so a pile of cheap fish can't alert and the trigger stays predictable;
+  the chat line **states the stack's value** (`~Ng` via the payload's `value` field) —
+  without the number, a white-quality alert would read like a bug. Deliberately
+  **independent of `catchAlerts`** (that checkbox's label is quality-specific — a
+  seller can want value alerts alone) and **off by default**: in a 30K/hr farm a
+  default-on value alert fires constantly and gets the whole feature turned off. It
+  qualifies entries into the **same per-window merged payload**, so one-sound-per-window
+  survives by construction; an item qualifying both ways appears once, with its value.
+  Its only external requirement is **Auctionator itself** (the options tooltip says so) —
+  deliberately **not** the `auctionatorPrices` display setting: the price overlay and the
+  value alert are separate features, so a player who hides the price column still keeps
+  the jackpot ping. Grays need no special case: they're unauctionable, so no price ever
+  qualifies them. `/ft alertall` drops only the quality threshold, never this one.
 
-Both settings are additive account-wide (`== nil` default-filled, sanitized — **no
-`DB_VERSION` bump**), with a nested options block (the threshold dropdown grays out under
-the enable checkbox — a real dependency) and `/ft alerts on|off|rare|epic`. Two dev-only
-test hooks: `/ft alerttest` fires the notifier with a fake payload to audition the sound
-without fishing (it bypasses the Core gate on purpose — it exercises delivery, not
-policy), and `/ft alertall` drops the quality threshold to zero so every recorded catch
-alerts through the real pipeline (an in-memory `ns` flag, never a setting — it cannot
-survive a logout or `/reload`, and it never bypasses the enable checkbox).
+All four settings are additive account-wide (`== nil` default-filled, sanitized — **no
+`DB_VERSION` bump**), with a nested options block (the quality-threshold dropdown grays
+out under the enable checkbox, the gold slider under **Alert on high-value catches** —
+real dependencies both; the value checkbox itself stays a **plain top-level control**
+like "Show Auctionator prices" — its only prerequisite is the Auctionator *addon*, and
+another addon's presence isn't a setting, so there is nothing to truthfully nest or
+gray it under) and
+`/ft alerts on|off|rare|epic` + `/ft alerts value on|off|<10-1000>`. Two dev-only
+test hooks: `/ft alerttest` fires the notifier with a fake payload (one quality entry,
+one value-carrying entry) to audition both chat-line shapes without fishing (it bypasses
+the Core gate on purpose — it exercises delivery, not policy), and `/ft alertall` drops
+the quality threshold to zero so every recorded catch alerts through the real pipeline
+(an in-memory `ns` flag, never a setting — it cannot survive a logout or `/reload`, and
+it never bypasses the enable checkbox).
 
 ## Architecture
 
@@ -407,7 +451,9 @@ can't be broken by a render path):
 
 - `ns.GetCurrentLocation()` → `{ zone, subZone, isSpecialPool, mapID }`
 - `ns.GetScopes()` → ordered `{ key, name }` list, ending in `{ key = "account", name = "Warband" }`
-- `ns.GetTotals(scope, mode)` → `{ casts, catches, ratePerHour, elapsed }` (`mode` = `"session"` | `"lifetime"`)
+- `ns.GetTotals(scope, mode)` → `{ casts, catches, ratePerHour, elapsed }` (`mode` =
+  `"session"` | `"lifetime"`; `ratePerHour` and `elapsed` are **session-only** — lifetime
+  has no clock, so both come back `nil` there rather than a fabricated number)
 - `ns.GetZoneTotals(scope, mode)` → catches-desc `{ {zone, catches}, … }`
 - `ns.GetLocationItems(scope, mode, zone, subZone)` → `{ {itemID, name, link, quality, count}, … }`,
   count-desc — with junk grouped last per `sortJunkLast` (see *What it does* §2)
@@ -426,16 +472,24 @@ same one-place discipline: both item seams sort through the shared `sortItems` (
 junk grouped last per `sortJunkLast`), so the two lists can never drift apart. Filtering
 and ordering live in the data layer, not the UI.
 
-The optional Auctionator price overlay adds three read-only pricing seams (also data layer —
+The optional Auctionator price overlay adds four read-only pricing seams (also data layer —
 the UI never touches Auctionator):
 
 - `ns.PricingActive()` → `true` only when the `auctionatorPrices` setting is on **and**
   Auctionator's `API.v1.GetAuctionPriceByItemID` is present. The single gate the UI checks.
-- `ns.GetItemPrice(itemID)` → unit market price in **copper**, or `nil` when pricing is off or
-  Auctionator has no data for the item (→ the `? 🪙` state).
+- `ns.GetItemPrice(itemID)` → unit market price in **copper**, or `nil` when Auctionator is
+  absent or has no data for the item (→ the `? 🪙` state). **Presence-gated only** — the
+  `auctionatorPrices` *display* setting is enforced by `PricingActive`/`GetSessionValue*` and
+  the UI call sites, which is what lets the value-alert gate price catches while the overlay
+  is hidden. The third-party return passes through `tonumber`, so callers can compare and
+  multiply it safely.
 - `ns.GetSessionValue()` → total **copper** of the current session's catches (`Σ count × unit`
   across all zones), or `nil` if pricing is off; skips items with no price and honors
   `includeJunk`.
+- `ns.GetSessionValueRate()` → the session's value per hour in **copper** (integer —
+  `GetSessionValue ÷ active hours`, the same clock as fish/hour), or `nil` when pricing is
+  off **or the clock is at zero** (pre-first-cast) — the UI omits the `(N 🪙/hr)`
+  parenthetical rather than render a fabricated rate.
 
 The tracking write-path (see the WoW API notes) feeds the same store these seams read:
 
@@ -457,12 +511,16 @@ The tracking write-path (see the WoW API notes) feeds the same store these seams
   one). The UI subscribes to **auto-hide** an auto-opened surface; this must be able to
   *hide* one, which `FireRefresh` can't.
 - `ns.RegisterCatchAlert(fn)` / `ns.FireCatchAlert(items)` — fired at most **once per
-  fishing loot window** when it recorded at least one alert-worthy catch (`catchAlerts`
-  on, quality ≥ the `alertQuality` threshold — the gating lives in Core, like the
-  includeJunk filter). The **first notifier with a payload**: an array of
+  fishing loot window** when it recorded at least one alert-worthy catch: quality ≥ the
+  `alertQuality` threshold (`catchAlerts` on), **or** unit price ≥ the `alertValueGold`
+  threshold (`valueAlerts` on + Auctionator installed; independent of the price-overlay
+  display setting) — the gating lives in Core, like the includeJunk filter. The **first notifier with a payload**: an array of
   `{ itemID, name, link, quality, count }` merged by itemID, valid only for the duration
-  of the synchronous fire — subscribers must not retain it. The UI subscriber plays the
-  alert sound and prints the chat line(s); it deliberately never touches visibility.
+  of the synchronous fire — subscribers must not retain it. Value-qualified entries
+  additionally carry **`value`** (copper, `unit × merged count`); quality-only entries
+  never set it, and subscribers must tolerate its absence. The UI subscriber plays the
+  alert sound and prints the chat line(s) — with `~Ng` appended on value-carrying
+  entries; it deliberately never touches visibility.
 
 `ns.GetSessionItems` rows additionally carry **`isNew`** — true when this is the first-ever
 catch of the item for the character (session count == lifetime count; see *What it does*

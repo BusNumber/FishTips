@@ -5,6 +5,25 @@ All notable changes to Fish & Tips are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-08-31
+
+### Added
+
+- **Gold per hour.** With Auctionator installed, the footer and compact strip now show
+  your session's gold-per-hour rate next to the running total: `1,234 🪙 (4,936 🪙/hr)`.
+  The rate runs on the same pausing timer as fish/hour. The session-end chat summary also 
+  prints the closing session's value.
+- **High-value catch alerts.** A new **Alert on high-value catches** option (off by
+  default; requires Auctionator): any catch whose per-fish auction value meets your gold
+  threshold gets the alert fanfare and a chat line stating its value, because the 
+  best-selling fish aren't always rare-quality.
+
+### Fixed
+
+- **The footer now shows the view you're looking at.** In the Lifetime view the footer
+  stat bar used to show the current session's numbers; it now shows lifetime casts and
+  catches correctly.
+
 ## [1.5.0] - 2026-08-19
 
 ### Added
@@ -126,6 +145,7 @@ Initial public release. For **Midnight, patch 12.0.7** (retail).
 - **Movable stats window** with a Session/Lifetime toggle and a character/Warband scope selector,
   and a **compact strip**.
 
+[1.6.0]: https://github.com/BusNumber/FishTips/releases/tag/v1.6.0
 [1.5.0]: https://github.com/BusNumber/FishTips/releases/tag/v1.5.0
 [1.4.1]: https://github.com/BusNumber/FishTips/releases/tag/v1.4.1
 [1.4.0]: https://github.com/BusNumber/FishTips/releases/tag/v1.4.0

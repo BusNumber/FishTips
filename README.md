@@ -32,16 +32,22 @@ is worth at auction, live, while you fish.
   session** (you pick the rule: after inactivity, on zone change, both, or manual-only —
   and your session even survives a `/reload`). If the window opened itself when you started
   fishing, it also tucks itself away when you stop; a window you opened stays put.
-- **Auctionator gold values.** Fish to sell? If you have **Auctionator** installed, the stats
-  window shows what your session is worth: each fish shows the value of your catch (count ×
-  auction price), and the footer and compact strip show a running **session total**. On by
-  default (it only ever shows with Auctionator installed); turn it off under **Show Auctionator
-  prices** or with `/ft auc off`.
+- **Auctionator gold values — with gold/hour.** Fish to sell? If you have **Auctionator**
+  installed, the stats window shows what your session is worth: each fish shows the value of
+  your catch (count × auction price), and the footer and compact strip show a running
+  **session total with your gold-per-hour rate** — the number that tells you whether this
+  pool is worth staying at. The rate runs on the same pausing timer as fish/hour, so a break
+  doesn't decay it, and when a session ends its summary line tells you what the whole outing
+  was worth. On by default (it only ever shows with Auctionator installed); turn it off under
+  **Show Auctionator prices** or with `/ft auc off`.
 - **Never miss a great catch.** Reel in something **rare or better** and Fish & Tips plays a
   short fanfare and drops the item link in chat — you fish by ear, it taps you on the shoulder
   when the good one lands. Raise the bar to epic-only in options, or turn it off with
-  `/ft alerts off`. And the first time you ever catch a fish, its row in the session list
-  wears a quiet **New!** tag — no sound, no pop-up, just a nod.
+  `/ft alerts off`. Because the best-selling fish often aren't rare-quality, there's also an
+  **Alert on high-value catches** option (off by default, needs Auctionator): pick a
+  gold threshold and any catch worth that much alerts too, with its value right in the chat
+  line — it works even with the price overlay hidden. And the first time you ever catch a fish, its row in the session list wears a quiet
+  **New!** tag — no sound, no pop-up, just a nod.
 
 The stats live in a movable window you can toggle from a slash command or the minimap's
 **addon compartment** (plus an optional minimap button) — and it can **open itself when 
@@ -54,7 +60,7 @@ Fish & Tips — this session                  78 casts · 284 catches/hr
     🐟 Abyssal Pike .......... 18 (25%)
     🐟 Stormfin Darter ....... 15 (21%)
     +4 more v
-  78 casts  ·  23 catches  ·  284/hr  ·  15m
+  78 casts · 23 catches · 284/hr · 15m      1,234 🪙 (4,936 🪙/hr)
 ```
 
 ## Installation
@@ -86,8 +92,8 @@ water to cast, and watch your catches auto-loot and log by location.
 - 🟢 Smart sessions — auto-end rules, pausing fish/hr timer, whole-session catch list, `/reload`-proof — *built*
 - 🟢 Casting — keybind **and/or** double-right-click, chosen in options (off by default) — *working*
 - 🟢 Fishing-only auto-loot (on by default; toggle in options) — *working*
-- 🟢 Auctionator gold values for the session (on by default; shows only with Auctionator installed) — *working*
-- 🟢 Rare-catch alerts (sound + chat line, rare/epic threshold) and a **New!** tag on first-ever catches — *built*
+- 🟢 Auctionator gold values for the session, with gold/hour and a session-end value summary (on by default; shows only with Auctionator installed) — *built*
+- 🟢 Rare-catch alerts (sound + chat line, rare/epic threshold), opt-in **high-value catch alerts** (gold threshold, needs Auctionator), and a **New!** tag on first-ever catches — *built*
 - ⬜ Auto-discard junk (sell or throw back gray catches) *(planned)*
 - ⬜ Auto-best-lure, gear/outfit swap, enhanced sound *(planned)*
 - ⬜ Gold / auction-house analytics per zone *(planned)*

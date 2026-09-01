@@ -54,12 +54,15 @@ function ns.FireSessionPause()
 end
 
 -- Catch-alert notification -- fired at most once per fishing loot window, when the
--- window recorded at least one alert-worthy catch (the catchAlerts setting on and
--- quality >= the alertQuality threshold -- like the includeJunk filter, the policy
--- lives in the data layer). The FIRST notifier with a payload: an array of
+-- window recorded at least one alert-worthy catch: quality >= the alertQuality
+-- threshold (catchAlerts on), OR unit price >= the alertValueGold threshold
+-- (valueAlerts on + Auctionator installed; independent of the price-overlay display
+-- setting) -- like the includeJunk filter, the policy lives in the data layer. The FIRST notifier with a payload: an array of
 -- { itemID, name, link, quality, count } merged by itemID, valid only for the
--- duration of the synchronous fire -- subscribers must not retain it. The UI
--- subscriber delivers sound + chat and deliberately never touches window visibility.
+-- duration of the synchronous fire -- subscribers must not retain it. Value-qualified
+-- entries additionally carry `value` (copper, unit x merged count); subscribers must
+-- tolerate its absence (quality-only entries never set it). The UI subscriber
+-- delivers sound + chat and deliberately never touches window visibility.
 local catchAlerters = {}
 
 function ns.RegisterCatchAlert(fn)
@@ -343,10 +346,15 @@ function ns.GetTotals(scope, mode)
       catches = catches + bucketCatches(b)
     end
   end
-  local elapsed = ns.SessionElapsed()
-  local rate
-  if mode == "session" and elapsed and elapsed > 0 then
-    rate = math.floor(catches / (elapsed / 3600) + 0.5)
+  -- Session only: lifetime has no clock, so an elapsed or a rate there would be a
+  -- fabrication -- lifetime totals carry bare casts + catches and the footer renders
+  -- them that way (DESIGN "What it does" S2).
+  local elapsed, rate
+  if mode == "session" then
+    elapsed = ns.SessionElapsed()
+    if elapsed and elapsed > 0 then
+      rate = math.floor(catches / (elapsed / 3600) + 0.5)
+    end
   end
   return { casts = casts, catches = catches, ratePerHour = rate, elapsed = elapsed }
 end
@@ -492,24 +500,36 @@ end
 -- ---------------------------------------------------------------------------
 local AUC_CALLER = addonName  -- non-empty callerID the API requires; just our name
 
--- True only when the user opted in AND Auctionator's API is actually present. Single
--- source of truth for "show prices" -- both Core and the UI gate on this.
-function ns.PricingActive()
-  local s = ns.GetSettings and ns.GetSettings()
-  if not (s and s.auctionatorPrices) then return false end
+-- Is Auctionator's public API actually reachable? Presence only -- no settings read.
+-- The value-alert gate keys off this alone: the alert and the price *overlay* are
+-- separate features, so hiding the overlay must not silence the alert.
+local function auctionatorPresent()
   return Auctionator ~= nil and Auctionator.API ~= nil and Auctionator.API.v1 ~= nil
     and Auctionator.API.v1.GetAuctionPriceByItemID ~= nil
 end
 
--- Unit market price for one item, in COPPER, or nil when pricing is off or Auctionator
--- has no scanned data for it. itemID is coerced to a number (the API errors otherwise);
--- the call is pcall-wrapped since it's a third-party entry point that can error().
+-- True only when the user opted in AND Auctionator's API is actually present. Single
+-- source of truth for "show prices" -- the UI and the display-facing seams gate on this.
+function ns.PricingActive()
+  local s = ns.GetSettings and ns.GetSettings()
+  if not (s and s.auctionatorPrices) then return false end
+  return auctionatorPresent()
+end
+
+-- Unit market price for one item, in COPPER, or nil when Auctionator is absent or has
+-- no scanned data for it. Presence-gated only -- the auctionatorPrices DISPLAY setting
+-- is enforced by PricingActive/GetSessionValue* and the UI call sites, which lets the
+-- value-alert gate price catches while the overlay is hidden. itemID is coerced to a
+-- number (the API errors otherwise); the call is pcall-wrapped since it's a third-party
+-- entry point that can error().
 function ns.GetItemPrice(itemID)
-  if not ns.PricingActive() then return nil end
+  if not auctionatorPresent() then return nil end
   itemID = tonumber(itemID)
   if not itemID then return nil end
   local ok, price = pcall(Auctionator.API.v1.GetAuctionPriceByItemID, AUC_CALLER, itemID)
-  if ok then return price end
+  -- tonumber, not the raw return: callers compare and multiply this, and a third-party
+  -- API's return type is not ours to trust.
+  if ok then return tonumber(price) end
   return nil
 end
 
@@ -541,6 +561,18 @@ function ns.GetSessionValue()
     end
   end
   return total
+end
+
+-- Session value per hour, in COPPER (integer), or nil when pricing is off or the
+-- session clock hasn't started (pre-first-cast, so no divide-by-zero rate spikes).
+-- Rounded to an integer on purpose: goldStr's deferred goldsilver/all branches do
+-- modulo arithmetic that a float would garble if the precision picker ever ships.
+function ns.GetSessionValueRate()
+  local v = ns.GetSessionValue()
+  if not v then return nil end
+  local e = ns.SessionElapsed()
+  if not e or e <= 0 then return nil end
+  return math.floor(v / (e / 3600) + 0.5)
 end
 
 -- ---------------------------------------------------------------------------
@@ -748,8 +780,24 @@ local function summarizeSession(sess, elapsed)
   if catches == 0 then return end
   local mins = math.floor(elapsed / 60 + 0.5)
   local rate = elapsed > 0 and math.floor(catches / (elapsed / 3600) + 0.5) or 0
-  print("|cffffd36eFish & Tips|r: " .. (ns.L["session ended: %d casts, %d catches in %dm (%d/hr)."])
-    :format(sess.casts or 0, catches, mins, rate))
+  -- The gold-farm audience's number: the closing session's value, when pricing can
+  -- supply one. Reads the still-live old session (the caller retires it AFTER this
+  -- line). Demo-guarded: GetSessionValue goes through the demo-poisoned session scope,
+  -- and a real session's summary must never print a demo-derived figure. Plain "~Ng"
+  -- text -- goldStr/fmtNum (icons, separators) are UI-local and Core stays print-only.
+  local gold = 0
+  if not ns.demoOn and ns.PricingActive() then
+    gold = math.floor((ns.GetSessionValue() or 0) / 10000)
+  end
+  local line
+  if gold > 0 then
+    line = (ns.L["session ended: %d casts, %d catches in %dm (%d/hr), ~%dg."])
+      :format(sess.casts or 0, catches, mins, rate, gold)
+  else
+    line = (ns.L["session ended: %d casts, %d catches in %dm (%d/hr)."])
+      :format(sess.casts or 0, catches, mins, rate)
+  end
+  print("|cffffd36eFish & Tips|r: " .. line)
 end
 
 function ns.RecordCast()
@@ -868,6 +916,17 @@ local function processLoot(nativeAutoLoot)
   -- It does not bypass the catchAlerts enable gate above.
   local alertMinQ = ns.alertAllCatches and 0
     or (((s and s.alertQuality) == "epic") and 4 or 3)
+  -- Value alerts: the second, independent alert path (rare-quality != valuable) --
+  -- fires on a catch whose UNIT market price meets the alertValueGold threshold,
+  -- whatever its quality. Opt-in (default off) and inert only without Auctionator
+  -- itself (the options tooltip's claim) -- deliberately NOT gated by the
+  -- auctionatorPrices display setting (the overlay and the alert are separate
+  -- features; a player who hides the price column keeps the jackpot ping) and NOT by
+  -- catchAlerts (that checkbox is quality-specific). /ft alertall drops only the
+  -- quality threshold above, never this one.
+  local valueOn = (s and s.valueAlerts) and auctionatorPresent() or false
+  local minValueCopper = valueOn and ((s.alertValueGold or 100) * 10000) or nil
+  local priceCache = valueOn and {} or nil  -- per-window; false = "no price" sentinel
   local alerts, alertByID
   local n = GetNumLootItems and GetNumLootItems() or 0
   local recorded = 0
@@ -878,7 +937,13 @@ local function processLoot(nativeAutoLoot)
       local itemID = GetItemInfoInstant(link)  -- nil for currency -> not tracked
       if itemID and recordCatchNoRefresh(itemID, quantity or 1, name, quality, link) then
         recorded = recorded + 1
-        if alertsOn and (quality or 0) >= alertMinQ then
+        local unit
+        if valueOn then
+          unit = priceCache[itemID]
+          if unit == nil then unit = ns.GetItemPrice(itemID) or false; priceCache[itemID] = unit end
+        end
+        local valueHit = unit and unit ~= false and unit >= minValueCopper
+        if (alertsOn and (quality or 0) >= alertMinQ) or valueHit then
           if not alerts then alerts, alertByID = {}, {} end
           local a = alertByID[itemID]
           if not a then
@@ -887,6 +952,9 @@ local function processLoot(nativeAutoLoot)
             alerts[#alerts + 1] = a
           end
           a.count = a.count + (quantity or 1)
+          -- Recompute from the merged count (never increment): value == unit x count
+          -- stays exact however same-item slots interleave with the quality path.
+          if valueHit then a.value = unit * a.count end
         end
       end
     end

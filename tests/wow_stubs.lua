@@ -23,6 +23,7 @@ local function resetState()
   M.lootSlots = {}
   M.lootLinkToItem = {}
   M.lootSlotCalls = 0     -- number of LootSlot() calls since install/setLoot
+  M.prices = nil          -- Auctionator price map { [itemID] = copper }; nil = not installed
   M.printed = {}          -- everything the addon print()ed
   M.frames = {}           -- every mock frame CreateFrame returned
 end
@@ -64,6 +65,23 @@ function M.setLoot(slots)
     if slot.link and s.itemID then M.lootLinkToItem[slot.link] = s.itemID end
     M.lootSlots[i] = slot
   end
+end
+
+-- Auctionator price stub: map = { [itemID] = copper }. Installs the public API table
+-- the pricing seams probe at CALL time (Core never captures the global at load, so a
+-- test may call this before or after loadAddon). Absent by default -- install() clears
+-- _G.Auctionator, otherwise one priced test would leak PricingActive() true into every
+-- later test (auctionatorPrices defaults on).
+function M.setPrices(map)
+  M.prices = map or {}
+  _G.Auctionator = { API = { v1 = {
+    GetAuctionPriceByItemID = function(_, itemID)
+      -- Mirror the real API's contract: error() on a non-number itemID -- pins Core's
+      -- tonumber coercion + pcall guard.
+      if type(itemID) ~= "number" then error("Auctionator API: itemID must be a number") end
+      return M.prices[itemID]
+    end,
+  } } }
 end
 
 -- Fire an event into every mock frame registered for it (the harness's event bus).
@@ -139,6 +157,7 @@ function M.install()
     M.printed[#M.printed + 1] = table.concat(parts, " ")
   end
 
+  _G.Auctionator = nil  -- pricing stub is opt-in per test via M.setPrices
   _G.FishTipsDB = nil
 end
 

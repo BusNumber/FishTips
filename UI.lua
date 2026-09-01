@@ -184,7 +184,8 @@ end
 -- Pooled acquire wrappers mirroring CreateFrame / MakeTex / MakeFS / MakeBorder for the
 -- body builders. Every acquire re-sets the state a previous use could have left behind:
 -- draw layer, texcoord, vertex color + color for textures (an icon use leaves a crop and
--- possibly a junk dim behind); font, color, JustifyH and auto-sizing for fontstrings.
+-- possibly a junk dim behind); font, color, JustifyH, word wrap and auto-sizing for
+-- fontstrings (the footer stat text turns wrap off for its width-constrained line).
 -- The SetSize(0, 0) reset is load-bearing -- it restores auto-sizing after
 -- a width-constrained use (the zone chart's SetWidth would otherwise leak into a later
 -- auto-sized label).
@@ -222,6 +223,7 @@ local function bodyFS(parent, size, color, flags)
   local fs = fsPool.Acquire(parent)
   fs:SetSize(0, 0)
   fs:SetJustifyH("LEFT")
+  fs:SetWordWrap(true)
   fs:SetFont(STANDARD_TEXT_FONT, size, flags or "")
   local c = color or { 1, 1, 1 }
   fs:SetTextColor(c[1], c[2], c[3], c[4] or 1)
@@ -261,19 +263,32 @@ local GOLD_ICON   = "|TInterface\\MoneyFrame\\UI-GoldIcon:0:0:2:0|t"
 local SILVER_ICON = "|TInterface\\MoneyFrame\\UI-SilverIcon:0:0:2:0|t"
 local COPPER_ICON = "|TInterface\\MoneyFrame\\UI-CopperIcon:0:0:2:0|t"
 local function goldStr(copper)
-  if not copper then return "? " .. GOLD_ICON end
+  -- No space before an icon: the escape's 2px x-offset already supplies the gap.
+  if not copper then return "?" .. GOLD_ICON end
   local s = ns.GetSettings and ns.GetSettings()
   local detail = (s and s.priceDetail) or "goldsilver"
   local g = math.floor(copper / 10000)
   if detail == "gold" then
-    return fmtNum(g) .. " " .. GOLD_ICON
+    return fmtNum(g) .. GOLD_ICON
   end
   local silver = math.floor((copper % 10000) / 100)
   if detail == "goldsilver" then
-    return fmtNum(g) .. " " .. GOLD_ICON .. " " .. silver .. " " .. SILVER_ICON
+    return fmtNum(g) .. GOLD_ICON .. " " .. silver .. SILVER_ICON
   end
-  return fmtNum(g) .. " " .. GOLD_ICON .. " " .. silver .. " " .. SILVER_ICON
-       .. " " .. (copper % 100) .. " " .. COPPER_ICON
+  return fmtNum(g) .. GOLD_ICON .. " " .. silver .. SILVER_ICON
+       .. " " .. (copper % 100) .. COPPER_ICON
+end
+
+-- The footer/compact right block: session value + gold-per-hour pair, "N icon (M icon/hr)".
+-- Callers already gate on PricingActive; the rate can still be nil on its own (the clock
+-- is at zero before the first cast), in which case the value renders alone -- no empty
+-- parens, no fabricated rate.
+local function sessionValueStr()
+  local v = goldStr(ns.GetSessionValue())
+  local rate = ns.GetSessionValueRate()
+  -- Two spaces before the paren: the icon escape's 2px x-offset visually eats one.
+  if rate then return (L["%s  (%s/hr)"]):format(v, goldStr(rate)) end
+  return v
 end
 
 -- Confirmation for the "New session" button -- guards against an accidental session wipe.
@@ -563,16 +578,29 @@ local function BuildBody_Classic(body, p, data)
   local footer = bodyFrame(body)
   footer:SetPoint("TOPLEFT", PAD, y); footer:SetSize(INNER, 24)
   local fbg = bodyTex(footer, { 1, 1, 1, 0.04 }); fbg:SetAllPoints()
-  local mins = math.floor((data.session.elapsed or 0) / 60 + 0.5)
-  local ftext = string.format(L["%d casts    %d %s    %s/hr    %dm"],
-    data.session.casts, data.session.catches, catchWord(data.session.catches),
-    data.session.ratePerHour or 0, mins)
+  -- Mode-appropriate footer, like the tiles layout: session numbers only in the
+  -- session view; lifetime shows bare casts + catches (no lifetime clock). Redundant
+  -- with the hero's lifetime stats above, but honest -- and classic is dev-only.
+  local t = data.mode == "session" and data.session or data.lifetime
+  local ftext
+  if data.mode == "session" then
+    local mins = math.floor((t.elapsed or 0) / 60 + 0.5)
+    ftext = string.format(L["%d casts    %d %s    %s/hr    %dm"],
+      t.casts, t.catches, catchWord(t.catches), t.ratePerHour or 0, mins)
+  else
+    local casts = t.casts or 0
+    ftext = string.format(L["%d %s    %d %s"],
+      casts, casts == 1 and L["cast"] or L["casts"], t.catches, catchWord(t.catches))
+  end
   local ff = bodyFS(footer, 11, p.textSecondary)
   ff:SetPoint("LEFT", 8, 0); ff:SetText(ftext)
-  -- Right-aligned session value (whole session, all zones), when Auctionator pricing is on.
+  -- Right-aligned session value + gold/hr (whole session, all zones), when Auctionator
+  -- pricing is on.
   if data.mode == "session" and ns.PricingActive and ns.PricingActive() then
     local fg = bodyFS(footer, 11, p.textSecondary)
-    fg:SetPoint("RIGHT", -8, 0); fg:SetText(goldStr(ns.GetSessionValue()))
+    fg:SetPoint("RIGHT", -8, 0); fg:SetText(sessionValueStr())
+    ff:SetWordWrap(false)
+    ff:SetPoint("RIGHT", fg, "LEFT", -8, 0)
   end
   y = y - 24
 
@@ -642,22 +670,36 @@ local function BuildBody_Tiles(body, p, data)
     end
   end
 
-  -- Footer stat bar (session totals) -- placeholder strip for future stats.
+  -- Footer stat bar -- the current view's totals. Session: casts/catches/rate/minutes;
+  -- Lifetime: bare casts + catches (no lifetime clock exists, so a rate or minutes
+  -- there would be fabrications -- the "never lie in the UI" rule).
   y = y - 4
   local footer = bodyFrame(body)
   footer:SetPoint("TOPLEFT", PAD, y); footer:SetSize(INNER, 24)
   local fbg = bodyTex(footer, { 1, 1, 1, 0.04 }); fbg:SetAllPoints()
-  local mins = math.floor((data.session.elapsed or 0) / 60 + 0.5)
-  local casts = data.session.casts or 0
-  local ftext = string.format(L["%d %s    %d %s    %s/hr    %dm"],
-    casts, casts == 1 and L["cast"] or L["casts"], data.session.catches,
-    catchWord(data.session.catches), data.session.ratePerHour or 0, mins)
+  local t = data.mode == "session" and data.session or data.lifetime
+  local casts = t.casts or 0
+  local ftext
+  if data.mode == "session" then
+    local mins = math.floor((t.elapsed or 0) / 60 + 0.5)
+    ftext = string.format(L["%d %s    %d %s    %s/hr    %dm"],
+      casts, casts == 1 and L["cast"] or L["casts"], t.catches,
+      catchWord(t.catches), t.ratePerHour or 0, mins)
+  else
+    ftext = string.format(L["%d %s    %d %s"],
+      casts, casts == 1 and L["cast"] or L["casts"], t.catches, catchWord(t.catches))
+  end
   local ff = bodyFS(footer, 11, p.textSecondary)
   ff:SetPoint("LEFT", 8, 0); ff:SetText(ftext)
-  -- Right-aligned session value (whole session, all zones), when Auctionator pricing is on.
+  -- Right-aligned session value + gold/hr (whole session, all zones), when Auctionator
+  -- pricing is on. Session view only -- lifetime prices would be stale.
   if data.mode == "session" and ns.PricingActive and ns.PricingActive() then
     local fg = bodyFS(footer, 11, p.textSecondary)
-    fg:SetPoint("RIGHT", -8, 0); fg:SetText(goldStr(ns.GetSessionValue()))
+    fg:SetPoint("RIGHT", -8, 0); fg:SetText(sessionValueStr())
+    -- The value block widened (gold/hr): bound the stat text against it so a long
+    -- stat line truncates instead of overlapping.
+    ff:SetWordWrap(false)
+    ff:SetPoint("RIGHT", fg, "LEFT", -8, 0)
   end
   y = y - 24
 
@@ -919,9 +961,10 @@ function UI.RefreshCompact()
   setTex(UI.compact.icon, p.accent)
   local txt = string.format("%s    %d %s    %s/hr",
     where, t.catches, catchWord(t.catches), t.ratePerHour or 0)
-  -- The strip is inherently session, so show the session value whenever pricing is on.
+  -- The strip is inherently session, so show the session value + gold/hr pair
+  -- whenever pricing is on.
   if ns.PricingActive and ns.PricingActive() then
-    txt = txt .. "    " .. goldStr(ns.GetSessionValue())
+    txt = txt .. "    " .. sessionValueStr()
   end
   UI.compact.text:SetText(txt)
   UI.compact:SetWidth(math.max(180, UI.compact.text:GetStringWidth() + 72))
@@ -1181,7 +1224,15 @@ ef:SetScript("OnEvent", function()
     for i = 1, #items do
       local it = items[i]
       local label = it.link or it.name or ("item:" .. tostring(it.itemID))
-      if (it.count or 1) > 1 then
+      -- A value-qualified entry carries `value` (stack copper) and the line states it --
+      -- without the number, a white-quality alert would read like a bug.
+      if it.value then
+        if (it.count or 1) > 1 then
+          ns.Say((L["Nice catch: %s x%d (~%s)"]):format(label, it.count, goldStr(it.value)))
+        else
+          ns.Say((L["Nice catch: %s (~%s)"]):format(label, goldStr(it.value)))
+        end
+      elseif (it.count or 1) > 1 then
         ns.Say((L["Nice catch: %s x%d"]):format(label, it.count))
       else
         ns.Say((L["Nice catch: %s"]):format(label))

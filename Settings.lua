@@ -21,6 +21,8 @@ local DEFAULTS = {
   autoLoot = true,          -- auto-loot a fishing catch (read live by Core's loot handler)
   catchAlerts = true,       -- sound + chat line on an alert-worthy catch (read live by Core)
   alertQuality = "rare",    -- alert threshold: "rare" (quality >= 3) | "epic" (>= 4)
+  valueAlerts = false,      -- also alert on unit price >= alertValueGold; opt-in (a low default in a gold farm would alert constantly), needs pricing active
+  alertValueGold = 100,     -- value-alert threshold in whole gold (per fish, not per stack)
   sessionEnd = "idle",      -- when a NEW session starts: "manual" | "idle" | "zone" | "zoneidle"
   sessionIdleMinutes = 30,  -- inactivity threshold (minutes since last cast) for idle/zoneidle
   sessionPause = true,      -- session clock counts inter-cast gaps only up to the grace below
@@ -82,6 +84,10 @@ local function applyDefaults(s)
   if s.alertQuality ~= "rare" and s.alertQuality ~= "epic" then
     s.alertQuality = DEFAULTS.alertQuality
   end
+  if type(s.valueAlerts) ~= "boolean" then s.valueAlerts = DEFAULTS.valueAlerts end
+  if type(s.alertValueGold) ~= "number" then s.alertValueGold = DEFAULTS.alertValueGold end
+  if s.alertValueGold < 10 then s.alertValueGold = 10
+  elseif s.alertValueGold > 1000 then s.alertValueGold = 1000 end
   if type(s.sessionPause) ~= "boolean" then s.sessionPause = DEFAULTS.sessionPause end
   if type(s.autoHide) ~= "boolean" then s.autoHide = DEFAULTS.autoHide end
   if type(s.includeJunk) ~= "boolean" then s.includeJunk = DEFAULTS.includeJunk end
@@ -203,6 +209,23 @@ function RegisterPanel()
   -- A real dependency (the threshold is meaningless with alerts off), so the gray-out
   -- tells the truth -- unlike the Auctionator case below, nesting is wanted here.
   alertQualityInit:SetParentInitializer(alertsInit, function() return settings.catchAlerts end)
+  -- Value alerts: a second, independent alert path (rare-quality != valuable) --
+  -- independent of catchAlerts AND of the "Show Auctionator prices" display setting;
+  -- its only external requirement is Auctionator itself. A PLAIN top-level checkbox
+  -- like "Show Auctionator prices": another addon's presence isn't a setting, so
+  -- there is nothing to truthfully nest/gray under. Without Auctionator it's simply
+  -- inert; the tooltip says so.
+  local valueInit = Settings.CreateCheckbox(category,
+    Register("valueAlerts", L["Alert on high-value catches"]),
+    L["Alert when a single catch's market value meets the threshold below, whatever its quality. Requires the Auctionator addon."])
+  local valueOptions = Settings.CreateSliderOptions(10, 1000, 10)
+  valueOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right,
+    function(value) return string.format("%dg", value) end)
+  local valueGoldInit = Settings.CreateSlider(category,
+    Register("alertValueGold", L["Alert when worth at least"]),
+    valueOptions, L["Per-fish market value (from Auctionator) that triggers the alert."])
+  -- This nesting IS truthful: with value alerts off the threshold has no effect.
+  valueGoldInit:SetParentInitializer(valueInit, function() return settings.valueAlerts end)
 
   -- Sessions ------------------------------------------------------------------------------
   -- Session boundaries and the clock are judged live in Core (lazily, at the next cast),
@@ -350,22 +373,46 @@ SlashCmdList["FISHTIPS"] = function(msg)
       say("autoloot: on | off  (currently " .. (settings.autoLoot ~= false and "on" or "off") .. ")")
     end
   elseif cmd == "alerts" then
+    local sub, arg = rest:match("^(%S*)%s*(.-)$")
     if rest == "on" or rest == "off" then
       settings.catchAlerts = (rest == "on")
       say((L["catch alerts %s."]):format(rest))
     elseif rest == "rare" or rest == "epic" then
       settings.alertQuality = rest
       say((L["alert threshold: %s."]):format(rest))
+    elseif sub == "value" then
+      if arg == "on" or arg == "off" then
+        settings.valueAlerts = (arg == "on")
+        say((L["value alerts %s."]):format(arg))
+      elseif tonumber(arg) then
+        -- Clamp to the slider's range and ECHO what was applied -- never silently
+        -- accept an out-of-range number.
+        local n = math.floor(tonumber(arg) + 0.5)
+        if n < 10 then n = 10 elseif n > 1000 then n = 1000 end
+        settings.alertValueGold = n
+        say((L["value alert threshold: %dg."]):format(n))
+      else
+        say("alerts value: on | off | <10-1000>  (currently "
+          .. (settings.valueAlerts and "on" or "off")
+          .. ", " .. (settings.alertValueGold or 100) .. "g)")
+      end
     else
-      say("alerts: on | off | rare | epic  (currently "
+      say("alerts: on | off | rare | epic | value ...  (currently "
         .. (settings.catchAlerts ~= false and "on" or "off")
-        .. ", " .. (settings.alertQuality or "rare") .. ")")
+        .. ", " .. (settings.alertQuality or "rare")
+        .. "; value " .. (settings.valueAlerts and "on" or "off")
+        .. ", " .. (settings.alertValueGold or 100) .. "g)")
     end
   elseif cmd == "alerttest" then
     -- Dev-only (like castdebug): preview the alert sound + chat line without fishing.
     -- Bypasses the Core gate on purpose -- it exercises delivery, not policy.
     if ns.FireCatchAlert then
-      ns.FireCatchAlert({ { itemID = 238383, name = "Eversong Trout", quality = 3, count = 1 } })
+      -- Two entries: a quality alert and a value alert (the `value` field drives the
+      -- "~Ng" chat-line shape), so both deliveries can be auditioned without fishing.
+      ns.FireCatchAlert({
+        { itemID = 238383, name = "Eversong Trout", quality = 3, count = 1 },
+        { itemID = 238366, name = "Lynxfish", quality = 1, count = 2, value = 2440000 },
+      })
     end
     say("alert test fired.")
   elseif cmd == "alertall" then
@@ -426,6 +473,6 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if ns.SetDemo then ns.SetDemo(on) end
     say("demo data " .. (on and "on." or "off."))
   else
-    say("commands: /ft  (toggle)  |  config  |  cast off|doubleclick|key|both  |  session manual|idle|zone|zoneidle  |  autoloot on|off  |  alerts on|off|rare|epic  |  junk on|off  |  junksort on|off  |  icons on|off  |  auc on|off  |  demo on|off")
+    say("commands: /ft  (toggle)  |  config  |  cast off|doubleclick|key|both  |  session manual|idle|zone|zoneidle  |  autoloot on|off  |  alerts on|off|rare|epic  |  alerts value on|off|<gold>  |  junk on|off  |  junksort on|off  |  icons on|off  |  auc on|off  |  demo on|off")
   end
 end

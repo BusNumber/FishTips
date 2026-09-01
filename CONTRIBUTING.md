@@ -73,8 +73,14 @@ handlers. It asserts the design invariants: account rollup = Σ characters, cros
 same-name characters stay distinct, the junk filter is consistent across every seam, each
 loot window is recorded exactly once (with one UI refresh), the fishing gate, mapID
 stamping, the version-downgrade guard, the catch-alert notifier (one fire per window,
-payload merge, the threshold and enable gates), the first-catch `isNew` derivation, and
-the junk-last list ordering (non-junk above junk, count-desc within each group).
+payload merge, the threshold and enable gates), the first-catch `isNew` derivation,
+the junk-last list ordering (non-junk above junk, count-desc within each group), the
+Auctionator pricing seams (an opt-in stub via `setPrices` — active/off gates, session
+value math, the junk filter, the gold/hour rate and its nil cases, lifetime totals
+carrying no clock), the value-based catch alerts (unit-price basis, the merged payload's
+`value` field, independence from both the quality path and the price-overlay setting,
+inert without Auctionator), and the session-end summary's value line (priced, unpriced,
+and demo-guarded).
 
 `UI.lua` and `Casting.lua` are deliberately **not** loaded — rendering and secure-binding
 behavior can't be meaningfully stubbed; those claims belong on the in-game checklist
@@ -133,8 +139,23 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       closed mid-fishing (close-beats-auto-open stays intact) and around an auto-hide.
 - [ ] Killing a mob or opening a chest right after fishing never alerts, even if the loot
       is epic (only recorded fishing catches can alert).
-- [ ] `/ft alerttest` plays the sound and prints the line — with the alerts checkbox on
-      **and** off (it previews delivery, bypassing the setting on purpose).
+- [ ] **Value alerts (off by default):** with **Alert on high-value catches** enabled and
+      Auctionator installed, catching a fish whose **unit** AH price meets the threshold
+      alerts — whatever its quality — and the chat line states the stack's value
+      (`… (~N 🪙)`, the gold icon rendering correctly in chat); a pile of cheap fish
+      whose stack total passes the threshold stays silent (unit basis). A fresh install
+      never value-alerts until the checkbox is ticked.
+- [ ] Value alerts fire with **Alert on rare catches** unchecked (the two paths are
+      independent), and a mixed window (a rare + a high-value white) plays **one** sound
+      with one line per fish — only the value-qualified line carries the `~N 🪙`.
+- [ ] Value alerts also fire with **Show Auctionator prices** off — the overlay and the
+      alert are independent features (no prices anywhere in the window, yet the chat line
+      still states the value). Without Auctionator itself they're silent — the tooltip
+      says so — and `/ft alerts value on|off|<10-1000>` switches the enable and threshold
+      live (out-of-range numbers clamp and echo the applied value).
+- [ ] `/ft alerttest` plays the sound and prints both line shapes (a quality line and a
+      `~N 🪙` value line) — with the alerts checkbox on **and** off (it previews
+      delivery, bypassing the setting on purpose).
 - [ ] `/ft alertall` makes a gray/common catch alert through the **real** pipeline (one
       sound per loot window, one chat line per item, correct links); with the alerts
       checkbox off it stays silent (the override drops only the quality threshold); and
@@ -215,6 +236,10 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       button after upgrading.
 - [ ] It drags and remembers its position across `/reload`.
 - [ ] The current zone/subzone is highlighted; session vs lifetime are both correct.
+- [ ] **Footer honesty:** the footer stat bar shows the **current view's** totals —
+      Session: `casts · catches · /hr · minutes`; Lifetime: bare `casts · catches` with
+      **no** rate, minutes, or gold block — and switches live with the Session/Lifetime
+      toggle (numbers visibly change; nothing session-flavored lingers in Lifetime).
 - [ ] The Session view's **New session** button pops a confirmation dialog; **Yes** resets the
       session counts and the timer (fish/hr too) with the Lifetime totals untouched, while **No**
       or Esc leaves the session intact.
@@ -247,6 +272,11 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
 - [ ] The **Alerts** block renders: **Alert threshold** is nested under **Alert on rare
       catches** and grays out when it's unchecked; `/ft alerts on|off|rare|epic` switches
       both live.
+- [ ] **Alert on high-value catches** renders as a plain top-level checkbox in the Alerts
+      block (deliberately not grayed without Auctionator — its tooltip names the
+      requirement), **off** on a fresh install; the **Alert when worth at least** slider
+      (10–1000g, 10g steps, `Ng` labels) is nested under it and grays out when it's
+      unchecked, re-enabling live.
 - [ ] **Auto-open when fishing** = Full window / Collapsed view / Disabled does the right thing
       on the next cast (and only when the window isn't already up).
 - [ ] Unchecking **Include junk items** (or `/ft junk off`) hides gray catches from the list
@@ -269,7 +299,8 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
 - [ ] The native **Defaults** button resets every option (minimap button hides, cast mode
       reverts, auto-open returns to Full window, junk items shown and sorted below real
       catches, item icons shown, Auctionator prices on, alerts on with the Rare threshold,
-      sessions back to After inactivity / 30m / pause on / 5m / auto-hide on).
+      value alerts off with the 100g threshold, sessions back to After inactivity / 30m /
+      pause on / 5m / auto-hide on).
 
 ### Auctionator price overlay (on by default)
 
@@ -279,9 +310,19 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
 - [ ] **With Auctionator installed + AH data, Session view:** with the option on (the default),
       each fish shows `(count × price 🪙)` floored to gold (number first, gold icon trailing); an
       item Auctionator has no data for shows `(? 🪙)`. The footer stat bar and the compact strip show
-      a right-aligned `session total 🪙` (≈ the sum of priced catches across all zones this session).
-      Toggling it
+      a right-aligned `session total 🪙 (rate 🪙/hr)` (the total ≈ the sum of priced catches across
+      all zones this session; the rate = that total over the session's **active** time, so it
+      freezes with the paused clock instead of decaying during breaks). Toggling it
       off (the box or `/ft auc off`) clears all of it immediately (no `/reload`); back on restores it.
+- [ ] **Gold/hr edge cases:** before the first cast of a session the `(rate 🪙/hr)`
+      parenthetical is absent (value alone, no empty parens); it appears after the first
+      cast and tracks catches live. In demo mode the pair renders from the demo dataset.
+- [ ] **Footer fit:** with prices on, a long stat line and the widened value block never
+      overlap — the left text truncates against the value block (check a session with
+      3-digit casts + a 4-digit gold total).
+- [ ] **Session-end summary value:** when a session auto-ends with pricing active, the
+      one-line summary ends with `, ~Ng.` (plain text, no icon); with pricing off (or no
+      Auctionator) it keeps the old shape, and a 0g session prints no value fragment.
 - [ ] **Session-only:** switching to **Lifetime** view hides the per-fish prices; switching
       back to **Session** restores them.
 - [ ] With **Include junk items** off, a gray fish's value drops out of the session total too

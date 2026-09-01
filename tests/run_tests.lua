@@ -1010,6 +1010,315 @@ test("nil_quality_sorts_as_non_junk", function()
 end)
 
 -- ---------------------------------------------------------------------------
+-- Auctionator pricing seams (baseline pins -- landed BEFORE the gold/hr and
+-- value-alert features so the pre-feature contract those stack on is pinned)
+-- ---------------------------------------------------------------------------
+
+test("pricing_inactive_without_auctionator_baseline", function()
+  -- Baseline pin: with the setting at its default (on) but no Auctionator installed,
+  -- every pricing seam reads "off". Must hold before AND after gold/hr + value alerts.
+  local ns = loadAddon({})
+  assertEq(ns.PricingActive(), false, "no Auctionator => pricing inactive")
+  assertEq(ns.GetItemPrice(111), nil, "no Auctionator => no unit price")
+  assertEq(ns.GetSessionValue(), nil, "no Auctionator => no session value")
+end)
+
+test("pricing_seams_with_stub_baseline", function()
+  -- Baseline pin: the seam contract against a present API -- copper unit price,
+  -- string itemID coerced, nil for unscanned items. The auctionatorPrices setting is
+  -- the DISPLAY off switch (PricingActive/GetSessionValue); the raw price lookup keys
+  -- on Auctionator's presence alone, so the decoupled value alerts can price catches
+  -- while the overlay is hidden.
+  local ns, S = loadAddon({})
+  S.setPrices({ [111] = 250000 })  -- 25g
+  assertEq(ns.PricingActive(), true, "setting on + API present => active")
+  assertEq(ns.GetItemPrice(111), 250000, "unit price in copper")
+  assertEq(ns.GetItemPrice("111"), 250000, "string itemID coerced to a number")
+  assertEq(ns.GetItemPrice(999), nil, "no scanned data => nil")
+  ns.GetSettings().auctionatorPrices = false
+  assertEq(ns.PricingActive(), false, "the setting alone turns the overlay off")
+  assertEq(ns.GetItemPrice(111), 250000, "unit price is presence-gated, not setting-gated")
+  assertEq(ns.GetSessionValue(), nil, "session value gated by the setting")
+end)
+
+test("session_value_math_and_junk_filter_baseline", function()
+  -- Baseline pin: GetSessionValue = sum(count x unit) over the live session, skipping
+  -- unpriced items and honoring includeJunk -- the base the gold/hr rate divides.
+  local ns, S = loadFishing()
+  S.setPrices({ [111] = 100000, [222] = 30000 })  -- 10g, 3g; 333 stays unpriced
+  catchFish(S, 111, 2, 1)
+  catchFish(S, 222, 3, 0)  -- gray
+  catchFish(S, 333, 1, 1)  -- no price data => contributes 0, not "?"
+  assertEq(ns.GetSessionValue(), 2 * 100000 + 3 * 30000, "sum of priced catches")
+  ns.GetSettings().includeJunk = false
+  assertEq(ns.GetSessionValue(), 200000, "hidden gray's value drops from the total")
+end)
+
+test("lifetime_rate_nil_baseline", function()
+  -- Baseline pin: lifetime totals never carry a rate -- there is no lifetime clock,
+  -- and the footer-honesty fix must keep that absence rather than fabricate a number.
+  local key = "Tester-TestRealm"
+  local ns = loadAddon({ db = { version = 1, chars = {
+    [key] = lifeWith(10, "Zone1", "SubA", { [111] = { count = 5, quality = 1 } }),
+  } } })
+  assertEq(ns.GetTotals(key, "lifetime").ratePerHour, nil, "no fabricated lifetime rate")
+end)
+
+test("auctionator_presence_never_alerts_baseline", function()
+  -- Baseline pin: prices alone never alert -- quality is the only alert path today.
+  -- After the value-alert feature ships (default OFF), this same world doubles as its
+  -- default-off proof: an expensive common catch stays silent until the player opts in.
+  local ns, S = loadFishing()
+  S.setPrices({ [111] = 5000000 })  -- a 500g common fish
+  local fires = 0
+  ns.RegisterCatchAlert(function() fires = fires + 1 end)
+  catchFish(S, 111, 1, 1)
+  assertEq(fires, 0, "an expensive common catch stays silent")
+end)
+
+-- ---------------------------------------------------------------------------
+-- Footer honesty + gold/hr (lifetime totals carry no clock; the value rate seam)
+-- ---------------------------------------------------------------------------
+
+test("lifetime_totals_carry_no_clock", function()
+  -- Lifetime elapsed is nil now (was: the live session clock, a fabricated number
+  -- the old always-session footer leaned on); the session table keeps its clock.
+  local ns, S = loadAddon({})
+  cast(S)
+  S.advance(60)
+  cast(S)
+  local key = ns.CharKey()
+  assertEq(ns.GetTotals(key, "lifetime").elapsed, nil, "no lifetime clock")
+  assertEq(ns.GetTotals(key, "lifetime").ratePerHour, nil, "no lifetime rate")
+  assertEq(ns.GetTotals(key, "session").elapsed, 60, "session clock intact")
+  assertTrue(ns.GetTotals(key, "session").ratePerHour ~= nil, "session rate intact")
+end)
+
+test("session_value_rate_math_and_nil_cases", function()
+  local ns, S = loadAddon({})
+  assertEq(ns.GetSessionValueRate(), nil, "no rate without Auctionator")
+  S.setPrices({ [111] = 100000 })  -- 10g
+  assertEq(ns.GetSessionValueRate(), nil, "no rate before the first cast (clock at zero)")
+  cast(S)
+  catchFish(S, 111, 2, 1)  -- 20g in the session
+  S.advance(120)           -- 2 min of active time (under the grace)
+  cast(S)
+  -- 200000 copper over 120s of active time -> 200000 / (120/3600) = 6,000,000 c/hr.
+  assertEq(ns.GetSessionValueRate(), 6000000, "value / active hours, integer copper")
+  ns.GetSettings().auctionatorPrices = false
+  assertEq(ns.GetSessionValueRate(), nil, "pricing off => no rate")
+end)
+
+-- ---------------------------------------------------------------------------
+-- Value-based catch alerts (the second, independent alert path)
+-- ---------------------------------------------------------------------------
+
+test("value_alert_fires_on_cheap_quality_expensive_fish", function()
+  local ns, S = loadFishing()
+  ns.GetSettings().valueAlerts = true
+  S.setPrices({ [111] = 2000000 })  -- 200g unit >= the 100g default threshold
+  local fires, last = 0, nil
+  ns.RegisterCatchAlert(function(items) fires = fires + 1; last = items end)
+  catchFish(S, 111, 2, 1)  -- common quality
+  assertEq(fires, 1, "value path fires without quality")
+  assertEq(#last, 1)
+  assertEq(last[1].itemID, 111)
+  assertEq(last[1].count, 2)
+  assertEq(last[1].value, 2 * 2000000, "payload value = unit x merged count")
+end)
+
+test("value_alert_unit_basis_stack_never_qualifies", function()
+  -- The threshold judges the UNIT price: a pile of cheap fish never alerts,
+  -- however much the stack is worth in total.
+  local ns, S = loadFishing()
+  ns.GetSettings().valueAlerts = true
+  S.setPrices({ [111] = 300000 })  -- 30g each; 5 of them = 150g > threshold
+  local fires = 0
+  ns.RegisterCatchAlert(function() fires = fires + 1 end)
+  catchFish(S, 111, 5, 1)
+  assertEq(fires, 0, "stack total never qualifies")
+end)
+
+test("value_alerts_ignore_overlay_setting", function()
+  -- The decoupling pin: the price OVERLAY and the value ALERT are separate features.
+  -- With "Show Auctionator prices" off (no prices anywhere in the window), a
+  -- threshold-passing catch still alerts -- only Auctionator's presence is required.
+  local ns, S = loadFishing()
+  ns.GetSettings().valueAlerts = true
+  ns.GetSettings().auctionatorPrices = false
+  S.setPrices({ [111] = 5000000 })
+  local fires, last = 0, nil
+  ns.RegisterCatchAlert(function(items) fires = fires + 1; last = items end)
+  catchFish(S, 111, 1, 1)
+  assertEq(fires, 1, "overlay off does not silence the value alert")
+  assertEq(last[1].value, 5000000, "payload still carries the value")
+  assertEq(ns.GetSessionValue(), nil, "the overlay itself stays off")
+end)
+
+test("value_alert_without_auctionator_no_error", function()
+  local ns, S = loadFishing()
+  ns.GetSettings().valueAlerts = true  -- opted in, but no Auctionator installed
+  local fires = 0
+  ns.RegisterCatchAlert(function() fires = fires + 1 end)
+  catchFish(S, 111, 1, 1)
+  assertEq(fires, 0, "no Auctionator => silent, no error")
+  assertEq(ns.GetTotals(ns.CharKey(), "session").catches, 1, "catch still records")
+end)
+
+test("mixed_quality_value_window_single_fire", function()
+  local ns, S = loadFishing()
+  ns.GetSettings().valueAlerts = true
+  S.setPrices({ [222] = 1500000 })  -- the white fish is worth 150g; the rare unpriced
+  local fires, last = 0, nil
+  ns.RegisterCatchAlert(function(items) fires = fires + 1; last = items end)
+  S.setLoot({
+    { itemID = 111, name = "BlueFish", quantity = 1, quality = 3 },
+    { itemID = 222, name = "RichWhite", quantity = 1, quality = 1 },
+  })
+  S.fire("LOOT_READY", false)
+  assertEq(fires, 1, "one sound for a mixed rare+value window")
+  assertEq(#last, 2, "both entries in the one payload")
+  local byId = {}
+  for _, a in ipairs(last) do byId[a.itemID] = a end
+  assertEq(byId[111].value, nil, "quality-only entry carries no value")
+  assertEq(byId[222].value, 1500000, "value entry carries the stack value")
+end)
+
+test("value_and_quality_qualified_single_entry", function()
+  local ns, S = loadFishing()
+  ns.GetSettings().valueAlerts = true
+  S.setPrices({ [111] = 2000000 })
+  local fires, last = 0, nil
+  ns.RegisterCatchAlert(function(items) fires = fires + 1; last = items end)
+  catchFish(S, 111, 1, 3)  -- rare AND expensive
+  assertEq(fires, 1)
+  assertEq(#last, 1, "both paths merge into one entry")
+  assertEq(last[1].quality, 3)
+  assertEq(last[1].value, 2000000)
+end)
+
+test("same_item_slots_merge_value", function()
+  local ns, S = loadFishing()
+  ns.GetSettings().valueAlerts = true
+  S.setPrices({ [111] = 2000000 })
+  local last
+  ns.RegisterCatchAlert(function(items) last = items end)
+  S.setLoot({
+    { itemID = 111, quantity = 2, quality = 1 },
+    { itemID = 111, quantity = 1, quality = 1 },
+  })
+  S.fire("LOOT_READY", false)
+  assertEq(#last, 1, "same item merges to one entry")
+  assertEq(last[1].count, 3)
+  assertEq(last[1].value, 3 * 2000000, "value recomputed from the merged count")
+end)
+
+test("value_alerts_independent_of_catch_alerts", function()
+  -- "Alert on rare catches" is quality-specific by label; turning it off must not
+  -- silence the value path -- and under it, an unpriced rare stays silent.
+  local ns, S = loadFishing()
+  ns.GetSettings().catchAlerts = false
+  ns.GetSettings().valueAlerts = true
+  S.setPrices({ [111] = 2000000 })
+  local fires, last = 0, nil
+  ns.RegisterCatchAlert(function(items) fires = fires + 1; last = items end)
+  S.setLoot({
+    { itemID = 111, name = "RichWhite", quantity = 1, quality = 1 },
+    { itemID = 222, name = "PoorRare", quantity = 1, quality = 3 },  -- unpriced rare
+  })
+  S.fire("LOOT_READY", false)
+  assertEq(fires, 1, "value path fires with quality alerts off")
+  assertEq(#last, 1, "the unpriced rare stays out of the payload")
+  assertEq(last[1].itemID, 111)
+end)
+
+test("value_alert_settings_sanitized", function()
+  local ns = loadAddon({ db = { version = 1, chars = {}, settings = {
+    valueAlerts = "garbage", alertValueGold = "lots",
+  } } })
+  assertEq(ns.GetSettings().valueAlerts, false, "type garbage falls back to the default (off)")
+  assertEq(ns.GetSettings().alertValueGold, 100, "type garbage falls back to 100g")
+  local ns2 = loadAddon({ db = { version = 1, chars = {}, settings = {
+    valueAlerts = true, alertValueGold = 5,
+  } } })
+  assertEq(ns2.GetSettings().valueAlerts, true, "persisted true survives the == nil fill")
+  assertEq(ns2.GetSettings().alertValueGold, 10, "below-range clamps up to 10")
+  local ns3 = loadAddon({ db = { version = 1, chars = {}, settings = { alertValueGold = 5000 } } })
+  assertEq(ns3.GetSettings().alertValueGold, 1000, "above-range clamps down to 1000")
+end)
+
+test("value_alert_slash", function()
+  local ns, S = loadAddon({})
+  _G.SlashCmdList["FISHTIPS"]("alerts value on")
+  assertEq(ns.GetSettings().valueAlerts, true, "slash on writes the setting")
+  _G.SlashCmdList["FISHTIPS"]("alerts value 250")
+  assertEq(ns.GetSettings().alertValueGold, 250, "slash sets the threshold")
+  _G.SlashCmdList["FISHTIPS"]("alerts value 25000")
+  assertEq(ns.GetSettings().alertValueGold, 1000, "out-of-range input clamps")
+  local echoed = false
+  for _, line in ipairs(S.printed) do
+    if line:find("1000g", 1, true) then echoed = true end
+  end
+  assertTrue(echoed, "the applied (clamped) value is echoed back")
+  _G.SlashCmdList["FISHTIPS"]("alerts value off")
+  assertEq(ns.GetSettings().valueAlerts, false, "slash off writes the setting")
+  _G.SlashCmdList["FISHTIPS"]("alerts off")
+  assertEq(ns.GetSettings().catchAlerts, false, "the plain on/off path still works")
+end)
+
+-- ---------------------------------------------------------------------------
+-- Session-end summary value
+-- ---------------------------------------------------------------------------
+
+test("summary_includes_value_when_priced", function()
+  local _, S = loadAddon({})
+  S.setPrices({ [111] = 100000 })  -- 10g
+  cast(S)
+  catchFish(S, 111, 2, 1)  -- a 20g session
+  S.advance(31 * 60)
+  cast(S)  -- idle end -> the old session's summary prints before it retires
+  local line
+  for _, l in ipairs(S.printed) do
+    if l:find("session ended", 1, true) then line = l end
+  end
+  assertTrue(line ~= nil, "summary printed")
+  assertTrue(line:find("~20g", 1, true) ~= nil, "summary carries the session value")
+end)
+
+test("summary_plain_without_pricing", function()
+  local _, S = loadAddon({})
+  cast(S)
+  catchFish(S, 111, 2, 1)
+  S.advance(31 * 60)
+  cast(S)
+  local line
+  for _, l in ipairs(S.printed) do
+    if l:find("session ended", 1, true) then line = l end
+  end
+  assertTrue(line ~= nil, "summary printed")
+  assertEq(line:find("~", 1, true), nil, "no value fragment without pricing")
+end)
+
+test("summary_value_demo_guarded", function()
+  -- A real session's closing line must never print a demo-derived figure --
+  -- GetSessionValue reads through the demo-poisoned session scope.
+  local ns, S = loadAddon({})
+  S.setPrices({ [111] = 100000 })
+  cast(S)
+  catchFish(S, 111, 2, 1)
+  ns.demoOn = true
+  S.advance(31 * 60)
+  cast(S)
+  ns.demoOn = false
+  local line
+  for _, l in ipairs(S.printed) do
+    if l:find("session ended", 1, true) then line = l end
+  end
+  assertTrue(line ~= nil, "summary still printed under demo")
+  assertEq(line:find("~", 1, true), nil, "demo on => no value in the summary")
+end)
+
+-- ---------------------------------------------------------------------------
 -- Runner
 -- ---------------------------------------------------------------------------
 local failed = 0
