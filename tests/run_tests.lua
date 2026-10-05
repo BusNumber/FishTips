@@ -10,6 +10,7 @@
 local here = (arg and arg[0] or ""):match("^(.*[/\\])") or ""
 local root = here .. "../"
 local stubs = dofile(here .. "wow_stubs.lua")
+local localeTools = dofile(here .. "locale_tools.lua")
 
 local realPrint = print  -- stubs.install() replaces _G.print; keep the real one for results
 
@@ -54,15 +55,30 @@ end
 -- Addon loader -- a fresh world per call. Loads the real files with the WoW
 -- addon vararg injected (file chunks receive addonName, ns).
 -- ---------------------------------------------------------------------------
-local ADDON_FILES = { "Locale.lua", "Core.lua", "Settings.lua" }  -- TOC order (UI/Casting are in-game-only)
+-- The load list is read from the TOC itself, so the suite boots the files -- in the
+-- order -- the game client would (a translation added to the TOC is loaded here too).
+-- UI.lua and Casting.lua are in-game-only (frames, secure bindings) and are skipped.
+local IN_GAME_ONLY = { ["UI.lua"] = true, ["Casting.lua"] = true }
+local ADDON_FILES = {}
+for _, file in ipairs(localeTools.tocFiles(root)) do
+  if not IN_GAME_ONLY[file] then ADDON_FILES[#ADDON_FILES + 1] = file end
+end
 
+-- opts.locale(ns) runs once Locale.lua and the Locales/ files have loaded and BEFORE any
+-- other file does -- the place to register a stand-in translation, exactly where a real
+-- Locales/xxXX.lua would sit.
 local function loadAddon(opts)
   opts = opts or {}
   stubs.install()
   if opts.setup then opts.setup(stubs) end
   _G.FishTipsDB = opts.db
   local ns = {}
+  local localeHookRan = false
   for _, file in ipairs(ADDON_FILES) do
+    if opts.locale and not localeHookRan and file ~= "Locale.lua" and not file:find("^Locales/") then
+      localeHookRan = true
+      opts.locale(ns)
+    end
     assert(loadfile(root .. file))("FishTips", ns)
   end
   stubs.fire("ADDON_LOADED", "FishTips")
@@ -173,10 +189,10 @@ test("session_reset_keeps_lifetime", function()
   assertEq(ns.GetTotals(key, "lifetime").catches, 3, "lifetime survives reset")
 end)
 
-test("locale_table_passthrough", function()
+test("locale_lookup_reads_the_table_at_call_time", function()
   local ns = loadAddon({})
-  assertEq(ns.L["Warband"], "Warband", "missing key falls back to itself")
-  ns.L["Warband"] = "Kriegsmeute"
+  assertEq(ns.L.SCOPE_WARBAND, "Warband", "the base locale supplies the text")
+  ns.locales.enUS.SCOPE_WARBAND = "Kriegsmeute"
   local scopes = ns.GetScopes()
   assertEq(scopes[#scopes].name, "Kriegsmeute", "seams read ns.L at call time")
 end)
@@ -1316,6 +1332,631 @@ test("summary_value_demo_guarded", function()
   end
   assertTrue(line ~= nil, "summary still printed under demo")
   assertEq(line:find("~", 1, true), nil, "demo on => no value in the summary")
+end)
+
+-- ---------------------------------------------------------------------------
+-- Localization: exact English text (the "nothing changes in English" pins), the
+-- options panel's strings, and the static key lint
+-- ---------------------------------------------------------------------------
+
+local PREFIX = "|cffffd36eFish & Tips|r: "
+
+-- The last printed line containing `fragment` (default: the English session summary).
+local function summaryLine(S, fragment)
+  local line
+  for _, l in ipairs(S.printed) do
+    if l:find(fragment or "session ended", 1, true) then line = l end
+  end
+  return line
+end
+
+-- Run a slash command and return the line it printed.
+local function slash(S, msg)
+  local before = #S.printed
+  _G.SlashCmdList["FISHTIPS"](msg)
+  assertEq(#S.printed, before + 1, "/ft " .. msg .. " prints exactly one line")
+  return S.printed[#S.printed]
+end
+
+test("english_summary_line_exact", function()
+  -- 2 casts 120s apart + the capped 5-min tail = 420s active; 3 catches -> 26/hr.
+  local _, S = loadAddon({})
+  cast(S)
+  catchFish(S, 111, 2, 1)
+  S.advance(120)
+  cast(S)
+  catchFish(S, 111, 1, 1)
+  S.advance(31 * 60)
+  cast(S)
+  assertEq(summaryLine(S), PREFIX .. "session ended: 2 casts, 3 catches in 7m (26/hr).")
+end)
+
+test("english_summary_line_exact_priced", function()
+  local _, S = loadAddon({})
+  S.setPrices({ [111] = 100000 })  -- 10g each
+  cast(S)
+  catchFish(S, 111, 2, 1)
+  S.advance(120)
+  cast(S)
+  catchFish(S, 111, 1, 1)
+  S.advance(31 * 60)
+  cast(S)
+  assertEq(summaryLine(S), PREFIX .. "session ended: 2 casts, 3 catches in 7m (26/hr), ~30g.")
+end)
+
+test("english_summary_line_exact_singular", function()
+  local _, S = loadAddon({})
+  cast(S)
+  catchFish(S, 111, 1, 1)
+  S.advance(31 * 60)
+  cast(S)
+  -- The one English line that changed with the plural hook: this used to read
+  -- "1 casts, 1 catches".
+  assertEq(summaryLine(S), PREFIX .. "session ended: 1 cast, 1 catch in 5m (12/hr).")
+end)
+
+test("english_downgrade_warning_exact", function()
+  local _, S = loadAddon({ db = { version = 99, chars = {} } })
+  assertEq(S.printed[1], PREFIX .. "your saved data is from a newer version (v99; this build reads v1). "
+    .. "Running without saving -- catches and settings from this session will NOT persist. "
+    .. "Please update the addon.")
+end)
+
+test("english_slash_output_exact", function()
+  local _, S = loadAddon({})
+  local function expect(msg, want) assertEq(slash(S, msg), PREFIX .. want, "/ft " .. msg) end
+  expect("cast key", "cast mode: key.")
+  expect("cast", "cast: off | doubleclick | key | both")
+  expect("session zone", "new sessions start: zone.")
+  expect("session", "session: manual | idle | zone | zoneidle  (currently zone)")
+  expect("autoloot off", "auto-loot off.")
+  expect("autoloot", "autoloot: on | off  (currently off)")
+  expect("alerts off", "catch alerts off.")
+  expect("alerts epic", "alert threshold: epic.")
+  expect("alerts value on", "value alerts on.")
+  expect("alerts value 250", "value alert threshold: 250g.")
+  expect("alerts value", "alerts value: on | off | <10-1000>  (currently on, 250g)")
+  expect("alerts", "alerts: on | off | rare | epic | value ...  (currently off, epic; value on, 250g)")
+  expect("junk off", "junk items off.")
+  expect("junk", "junk: on | off  (currently off)")
+  expect("junksort off", "junk sort off.")
+  expect("junksort", "junksort: on | off  (currently off)")
+  expect("icons off", "list icons off.")
+  expect("icons", "icons: on | off  (currently off)")
+  expect("auc off", "auctionator prices off.")
+  expect("auc", "auc: on | off  (currently off)")
+  expect("theme classic", "theme set to classic.")
+  expect("theme", "theme: classic | modern | blend")
+  expect("bogus", "commands: /ft  (toggle)  |  config  |  cast off|doubleclick|key|both  |  "
+    .. "session manual|idle|zone|zoneidle  |  autoloot on|off  |  alerts on|off|rare|epic  |  "
+    .. "alerts value on|off|<gold>  |  junk on|off  |  junksort on|off  |  icons on|off  |  "
+    .. "auc on|off  |  demo on|off")
+end)
+
+test("options_panel_registers_cleanly", function()
+  local ns, S = loadAddon({ setup = function(st) st.installSettingsPanel() end })
+  local panel = S.panel
+  assertTrue(panel.registered, "the category was registered")
+  assertEq(panel.categoryName, "Fish & Tips", "the brand names the category")
+  assertEq(#panel.controls, 18, "every option is registered")
+  for _, c in ipairs(panel.controls) do
+    assertTrue(type(c.name) == "string" and c.name ~= "", c.key .. " has a label")
+    assertTrue(type(c.tooltip) == "string" and c.tooltip ~= "", c.key .. " has a tooltip")
+    -- RegisterAddOnSetting reads/writes db.settings by key; the VarType comes from the
+    -- default's Lua type (a mismatch is an in-game-only failure otherwise).
+    assertEq(c.setting.tbl, ns.GetSettings(), c.key .. " binds the live settings table")
+    assertTrue(c.default ~= nil, c.key .. " has a default")
+    assertEq(c.varType, type(c.default), c.key .. " VarType matches its default")
+    assertEq(type(c.setting.tbl[c.key]), c.varType, c.key .. " stored value matches the VarType")
+    if c.kind == "dropdown" then
+      local options = c.options()
+      assertTrue(#options > 0, c.key .. " has options")
+      for _, o in ipairs(options) do
+        assertTrue(type(o.label) == "string" and o.label ~= "", c.key .. " option label")
+      end
+    end
+  end
+  for _, h in ipairs(panel.headers) do
+    assertTrue(type(h) == "string" and h ~= "", "section header text")
+  end
+  -- The truthful gray-outs: each nested control sits under the setting it depends on.
+  local nesting = {
+    castDelay = "castMode", alertQuality = "catchAlerts", alertValueGold = "valueAlerts",
+    sessionIdleMinutes = "sessionEnd", sessionGraceMinutes = "sessionPause",
+    autoHide = "sessionPause", sortJunkLast = "includeJunk",
+  }
+  for _, c in ipairs(panel.controls) do
+    assertEq(c.parent and c.parent.key or nil, nesting[c.key], c.key .. " nesting")
+  end
+end)
+
+test("english_options_slider_labels_exact", function()
+  local _, S = loadAddon({ setup = function(st) st.installSettingsPanel() end })
+  local function label(key, value) return S.panel.byKey[key].sliderOptions.formatter(value) end
+  assertEq(label("castDelay", 0.3), "0.30s")
+  assertEq(label("alertValueGold", 100), "100g")
+  assertEq(label("sessionIdleMinutes", 30), "30m")
+  assertEq(label("sessionGraceMinutes", 5), "5m")
+end)
+
+-- A scripted outing that touches everything stored: casts and catches in two zones, a
+-- junk catch, settings changed through slash commands, and a session that ends itself.
+-- Returns a deep copy of the resulting SavedVariables.
+local function storedDataAfterOuting(opts)
+  local _, S = loadAddon(opts)
+  cast(S)
+  S.setLoot({ { itemID = 111, name = "FishA", quantity = 2, quality = 1 } })
+  S.fire("LOOT_READY", false)
+  S.fire("LOOT_CLOSED")
+  S.advance(90)
+  S.zone, S.sub, S.mapID = "Zone2", "SubB", 1600
+  cast(S)
+  S.setLoot({ { itemID = 222, name = "Junk", quantity = 1, quality = 0 } })
+  S.fire("LOOT_READY", false)
+  S.fire("LOOT_CLOSED")
+  _G.SlashCmdList["FISHTIPS"]("alerts epic")
+  _G.SlashCmdList["FISHTIPS"]("junk off")
+  S.advance(31 * 60)
+  cast(S)  -- idle end: the summary prints and a fresh session starts
+  catchFish(S, 111, 1, 1)
+  return deepCopy(_G.FishTipsDB), S
+end
+
+test("stored_data_outing_is_deterministic", function()
+  local db = storedDataAfterOuting({})
+  local again = storedDataAfterOuting({})
+  assertTrue(deepEqual(db, again), "the same outing stores the same data")
+  local me = db.chars["Tester-TestRealm"]
+  assertEq(me.lifetime.casts, 3)
+  assertEq(me.lifetime.zones["Zone1"].subs["SubA"].items[111].name, "FishA", "item names stored as looted")
+  assertEq(me.lifetime.zones["Zone2"].subs["SubB"].items[222].count, 1)
+  assertEq(db.settings.alertQuality, "epic", "setting values are tokens")
+  assertEq(db.settings.includeJunk, false)
+end)
+
+-- ---------------------------------------------------------------------------
+-- The string table (Locale.lua + Locales/): the base locale, its keys, which language
+-- is shown, and the helpers that format counts and numbers
+-- ---------------------------------------------------------------------------
+
+local function sortedKeys(t)
+  local keys = {}
+  for key in pairs(t) do keys[#keys + 1] = key end
+  table.sort(keys)
+  return keys
+end
+
+test("locale_files_load_first", function()
+  -- Every other file reads ns.L, and an explicit locale choice is applied on top of
+  -- whatever registered -- both need the mechanism, then the locale files, up front.
+  local files = localeTools.tocFiles(root)
+  assertEq(files[1], "Locale.lua", "the mechanism loads first")
+  assertEq(files[2], localeTools.BASE_LOCALE, "then the base locale")
+  local i = 3
+  while files[i] and files[i]:find("^Locales/") do i = i + 1 end
+  for j = i, #files do
+    assertTrue(not files[j]:find("^Locales/"), files[j] .. " must load with the other locale files, before Core.lua")
+  end
+end)
+
+test("locale_keys_defined_and_used", function()
+  local ns = loadAddon({})
+  local base = ns.locales.enUS
+  local scan = localeTools.scanKeys(root)
+  -- A computed lookup would hide its key from this scan.
+  assertEq(#scan.dynamic, 0, "the string table is read only as L.KEY: " .. table.concat(scan.dynamic, "; "))
+  for _, key in ipairs(sortedKeys(scan.read)) do
+    assertTrue(base[key] ~= nil,
+      scan.read[key] .. " reads L." .. key .. ", which " .. localeTools.BASE_LOCALE .. " never defines")
+  end
+  for _, key in ipairs(sortedKeys(base)) do
+    assertTrue(scan.read[key], localeTools.BASE_LOCALE .. " defines " .. key .. ", which no file reads")
+  end
+end)
+
+test("locale_base_values_wellformed", function()
+  local ns = loadAddon({})
+  local count = 0
+  for key, value in pairs(ns.locales.enUS) do
+    count = count + 1
+    assertTrue(type(key) == "string" and key:find("^[%u][%u%d_]*$") ~= nil, "key is not UPPER_SNAKE: " .. tostring(key))
+    assertTrue(type(value) == "string" and value ~= "", key .. " must be a non-empty string")
+    local sig, reason, positional = localeTools.signature(value)
+    assertTrue(sig, key .. ": " .. tostring(reason))
+    -- The base locale is the one that runs headless, and stock Lua's string.format has
+    -- no positional arguments -- those are for translations, in the game client.
+    assertTrue(not positional, key .. ": the base locale uses plain placeholders only")
+  end
+  assertTrue(count > 100, "the base locale defines the addon's strings")
+end)
+
+test("locale_missing_key_reads_back_as_its_name", function()
+  local ns = loadAddon({})
+  -- A typo'd key must render as visible text, never throw inside a render...
+  assertEq(ns.L.NO_SUCH_KEY, "NO_SUCH_KEY")
+  assertEq(ns.L.NO_SUCH_KEY:format(3), "NO_SUCH_KEY")
+  -- ...and the fallback never writes the miss into the table.
+  assertEq(rawget(ns.L, "NO_SUCH_KEY"), nil)
+end)
+
+test("locale_priority_explicit_then_client_then_english", function()
+  -- Priority 3: no translation for this client's language -> English.
+  local ns = loadAddon({ setup = function(st) st.locale = "xxXX" end })
+  assertEq(ns.GetLocaleCode(), "enUS")
+  assertEq(ns.L.SCOPE_WARBAND, "Warband")
+
+  -- Priority 2: the client's language, as soon as a translation for it registers.
+  local mine = ns.NewLocale("xxXX")
+  mine.SCOPE_WARBAND = "Kriegsmeute"
+  assertEq(ns.GetLocaleCode(), "xxXX")
+  assertEq(ns.L.SCOPE_WARBAND, "Kriegsmeute")
+  assertEq(ns.L.ZONES_TITLE, "Top zones", "a key the translation leaves out stays English")
+  assertEq(ns.GetScopes()[#ns.GetScopes()].name, "Kriegsmeute", "seams read the table at call time")
+
+  -- Another language's translation is inert on this client...
+  local other = ns.NewLocale("yyYY")
+  other.SCOPE_WARBAND = "Bataillon"
+  assertEq(ns.L.SCOPE_WARBAND, "Kriegsmeute")
+
+  -- ...until it is chosen explicitly. Priority 1 beats the client's language.
+  assertTrue(ns.SetLocale("yyYY"))
+  assertEq(ns.GetLocaleCode(), "yyYY")
+  assertEq(ns.L.SCOPE_WARBAND, "Bataillon")
+  assertTrue(ns.SetLocale("enUS"), "English can be chosen explicitly on a translated client")
+  assertEq(ns.L.SCOPE_WARBAND, "Warband")
+  assertEq(ns.SetLocale("zzZZ"), false, "an unregistered code is refused")
+  assertEq(ns.GetLocaleCode(), "enUS", "... and changes nothing")
+
+  -- Clearing the choice returns to the client's language.
+  assertTrue(ns.SetLocale(nil))
+  assertEq(ns.GetLocaleCode(), "xxXX")
+  local codes = table.concat(ns.GetLocaleCodes(), ",")
+  assertTrue(codes:find("enUS", 1, true) and codes:find("xxXX,yyYY", 1, true), "registered codes, sorted: " .. codes)
+end)
+
+test("locale_codes_can_share_a_translation", function()
+  local ns = loadAddon({})
+  local shared = ns.NewLocale("xxXX", "yyYY")
+  shared.SCOPE_WARBAND = "Banda"
+  assertEq(ns.locales.xxXX, ns.locales.yyYY, "one table serves both client codes")
+  assertTrue(ns.SetLocale("yyYY"))
+  assertEq(ns.L.SCOPE_WARBAND, "Banda")
+end)
+
+test("locale_listeners_follow_the_active_locale", function()
+  -- ns.OnLocale keeps the strings handed to the game at file load (the Key Bindings
+  -- label, the New-session prompt) in step with an explicit choice applied later.
+  local ns = loadAddon({})
+  local seen = {}
+  ns.OnLocale(function() seen[#seen + 1] = ns.L.SCOPE_WARBAND end)
+  assertEq(#seen, 1, "runs once right away")
+  assertEq(seen[1], "Warband")
+  local other = ns.NewLocale("xxXX")
+  other.SCOPE_WARBAND = "Kriegsmeute"
+  assertEq(#seen, 1, "another client's translation registering changes nothing")
+  ns.SetLocale("xxXX")
+  assertEq(seen[2], "Kriegsmeute", "runs again when the active locale changes")
+  ns.SetLocale("xxXX")
+  assertEq(#seen, 2, "... and not when it stays the same")
+  ns.SetLocale(nil)
+  assertEq(seen[3], "Warband")
+end)
+
+test("plural_matches_the_old_inline_rule", function()
+  -- The oracle is the expression the footers used before ns.Plural existed.
+  local ns = loadAddon({})
+  for _, n in ipairs({ 0, 1, 2, 21, 101 }) do
+    assertEq(ns.Plural(n, ns.L.CASTS_ONE, ns.L.CASTS_MANY), ("%d %s"):format(n, n == 1 and "cast" or "casts"))
+    assertEq(ns.Plural(n, ns.L.CATCHES_ONE, ns.L.CATCHES_MANY), ("%d %s"):format(n, n == 1 and "catch" or "catches"))
+  end
+end)
+
+test("format_number_matches_the_old_ui_helper", function()
+  -- Verbatim copy of UI.lua's fmtNum as it was before ns.FormatNumber replaced it.
+  local function oldFmtNum(n)
+    n = n or 0
+    local s = tostring(math.floor(n + 0.5))
+    local sign, digits = s:match("^(%-?)(%d+)$")
+    if not digits then return s end
+    digits = digits:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+    return sign .. digits
+  end
+  local ns = loadAddon({})
+  local samples = { 0, 1, 12, 999, 1000, 1234, 12345, 123456, 1234567, 1234567890,
+    -1, -999, -1000, -1234567, 0.4, 0.5, 999.5, 1234.49, 1e15, 1e16 }
+  for _, n in ipairs(samples) do
+    assertEq(ns.FormatNumber(n), oldFmtNum(n), "n = " .. tostring(n))
+  end
+  for n = 0, 250000, 137 do
+    assertEq(ns.FormatNumber(n), oldFmtNum(n), "n = " .. n)
+  end
+  assertEq(ns.FormatNumber(nil), oldFmtNum(nil), "nil counts as zero")
+  assertEq(ns.FormatNumber(1234567), "1,234,567")
+end)
+
+test("format_number_uses_the_locale_separator", function()
+  local ns = loadAddon({})
+  local T = ns.NewLocale("xxXX")
+  ns.SetLocale("xxXX")
+  assertEq(ns.FormatNumber(1234567), "1,234,567", "not translated: the English separator")
+  T.THOUSANDS_SEPARATOR = "."
+  assertEq(ns.FormatNumber(1234567), "1.234.567")
+  assertEq(ns.FormatNumber(-1234), "-1.234")
+  T.THOUSANDS_SEPARATOR = "\226\128\175"  -- a multi-byte separator (narrow no-break space)
+  assertEq(ns.FormatNumber(1234567), "1\226\128\175234\226\128\175567")
+  T.THOUSANDS_SEPARATOR = "%"             -- a pattern-special character is taken literally
+  assertEq(ns.FormatNumber(1234), "1%234")
+  T.THOUSANDS_SEPARATOR = ""              -- no grouping; must not hang
+  assertEq(ns.FormatNumber(1234567), "1234567")
+end)
+
+-- ---------------------------------------------------------------------------
+-- A translated client. The stand-in translation is built from the base locale itself:
+-- every ASCII letter becomes "#", placeholders survive in place. Any letter that still
+-- shows up afterwards did not come from the string table.
+-- ---------------------------------------------------------------------------
+
+local function standIn(value)
+  local parts, pos = {}, 1
+  while true do
+    local s, e = value:find("%%[%d%.]*%a", pos)
+    parts[#parts + 1] = (value:sub(pos, (s or 0) - 1):gsub("%a", "#"))
+    if not s then break end
+    parts[#parts + 1] = value:sub(s, e)
+    pos = e + 1
+  end
+  return table.concat(parts)
+end
+
+-- A loadAddon opts.locale hook that registers the stand-in under `code`, exactly where
+-- a real Locales/<code>.lua would load. P (optional) receives the translated table.
+local function standInLocale(code, P)
+  return function(ns)
+    local T = ns.NewLocale(code)
+    for key, value in pairs(ns.locales.enUS) do
+      T[key] = standIn(value)
+      if P then P[key] = T[key] end
+    end
+  end
+end
+
+-- Fails when `text` still shows a letter once the brand, the color codes, and the given
+-- tokens (a slash word the player typed, a stubbed value) are taken out.
+local function assertNoEnglish(text, where, ...)
+  local s = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("Fish & Tips", "")
+  for i = 1, select("#", ...) do
+    local token = select(i, ...)
+    if token then s = s:gsub(token, "", 1) end
+  end
+  local leak = s:match("%a[%a ']*")
+  if leak then
+    error(where .. ': "' .. leak .. '" is displayed without going through the string table', 2)
+  end
+end
+
+test("locale_translation_reaches_every_displayed_string", function()
+  -- Everything the two harness-loaded files can display, under the stand-in. The other
+  -- files see the table through a proxy that records which keys they ever read.
+  local P, used = {}, {}
+  local function hook(ns)
+    standInLocale("xxXX", P)(ns)
+    local real = ns.L
+    ns.L = setmetatable({}, { __index = function(_, key)
+      used[key] = true
+      return real[key]
+    end })
+  end
+  local function world(db)
+    return loadAddon({ locale = hook, db = db, setup = function(st)
+      st.locale = "xxXX"
+      st.installSettingsPanel()
+    end })
+  end
+
+  -- ---- seam labels and number formatting
+  local ns, S = world()
+  assertEq(ns.GetLocaleCode(), "xxXX")
+  assertEq(ns.GetScopes()[#ns.GetScopes()].name, P.SCOPE_WARBAND)
+  assertNoEnglish(P.SCOPE_WARBAND, "the Warband scope")
+  assertEq(ns.FormatNumber(1234), "1,234")
+
+  -- ---- the options panel: every label, tooltip, dropdown choice, slider value, header
+  for _, c in ipairs(S.panel.controls) do
+    assertNoEnglish(c.name, c.key .. " label")
+    assertNoEnglish(c.tooltip, c.key .. " tooltip")
+    if c.kind == "dropdown" then
+      for _, o in ipairs(c.options()) do assertNoEnglish(o.label, c.key .. " choice") end
+    end
+    if c.sliderOptions then
+      assertNoEnglish(c.sliderOptions.formatter(c.sliderOptions.min), c.key .. " slider value")
+    end
+  end
+  assertTrue(#S.panel.headers >= 7, "section headers plus the two footer lines")
+  for _, h in ipairs(S.panel.headers) do
+    assertNoEnglish(h, "panel header", "test")  -- the stubbed version / donate value
+  end
+
+  -- ---- every /ft setting reply (the typed word is a command token and stays as typed)
+  local function reply(msg, token)
+    assertNoEnglish(slash(S, msg), "/ft " .. msg, token)
+  end
+  reply("cast key", "key")
+  reply("session zone", "zone")
+  reply("autoloot off", "off")
+  reply("alerts off", "off")
+  reply("alerts epic", "epic")
+  reply("alerts value on", "on")
+  reply("alerts value 250")
+  reply("junk off", "off")
+  reply("junksort off", "off")
+  reply("icons off", "off")
+  reply("auc off", "off")
+  reply("theme classic", "classic")
+
+  -- ---- session summaries: singular and plural nouns, without and with a gold value
+  local _, S2 = world()
+  cast(S2)
+  catchFish(S2, 111, 1, 1)
+  S2.advance(31 * 60)
+  cast(S2)                       -- ends the 1-cast, 1-catch session: the plain summary
+  catchFish(S2, 111, 2, 1)
+  S2.advance(60)
+  cast(S2)
+  S2.setPrices({ [111] = 100000 })  -- 10g each
+  S2.advance(31 * 60)
+  cast(S2)                       -- ends the 2-cast, 2-catch session: the priced summary
+  assertEq(#S2.printed, 2, "two summaries printed")
+  assertEq(S2.printed[1], PREFIX .. P.CHAT_SESSION_ENDED:format(
+    P.CASTS_ONE:format(1), P.CATCHES_ONE:format(1), 5, 12))
+  assertEq(S2.printed[2], PREFIX .. P.CHAT_SESSION_ENDED_VALUE:format(
+    P.CASTS_MANY:format(2), P.CATCHES_MANY:format(2), 6, 20, 20))
+  assertNoEnglish(S2.printed[1], "session summary")
+  assertNoEnglish(S2.printed[2], "priced session summary")
+
+  -- ---- the newer-saved-data warning
+  local _, S3 = world({ version = 99, chars = {} })
+  assertEq(S3.printed[1], PREFIX .. P.CHAT_NEWER_DATA:format(99, 1))
+  assertNoEnglish(S3.printed[1], "newer-data warning")
+
+  -- ---- and together they read every key these files use: a key they never read is a
+  -- string this test cannot vouch for. (UI.lua and Casting.lua can't load here; their
+  -- keys are covered by locale_keys_defined_and_used only.)
+  local scan = localeTools.scanKeys(root)
+  for _, file in ipairs({ "Locale.lua", "Core.lua", "Settings.lua" }) do
+    for _, key in ipairs(sortedKeys(scan.byFile[file])) do
+      assertTrue(used[key], file .. " reads L." .. key .. ", which this test never displays: extend it")
+    end
+  end
+end)
+
+test("locale_saved_choice_applies_before_the_panel_registers", function()
+  local P = {}
+  local ns, S = loadAddon({
+    locale = standInLocale("xxXX", P),
+    setup = function(st) st.installSettingsPanel() end,  -- an enUS client
+    db = { version = 1, chars = {}, settings = { locale = "xxXX" } },
+  })
+  assertEq(ns.GetLocaleCode(), "xxXX", "the saved choice wins over the client's language")
+  assertEq(S.panel.byKey.autoLoot.name, P.OPT_AUTO_LOOT, "the panel registered in the chosen language")
+  assertEq(ns.GetScopes()[#ns.GetScopes()].name, P.SCOPE_WARBAND)
+  assertEq(ns.GetSettings().locale, "xxXX", "the choice stays until changed")
+end)
+
+test("locale_saved_choice_stale_or_garbage_is_dropped", function()
+  local ns = loadAddon({ db = { version = 1, chars = {}, settings = { locale = "zzZZ" } } })
+  assertEq(ns.GetLocaleCode(), "enUS", "an unregistered code falls back to the client, then English")
+  assertEq(ns.GetSettings().locale, nil, "... and is cleared")
+  assertEq(ns.L.SCOPE_WARBAND, "Warband")
+  local ns2 = loadAddon({ db = { version = 1, chars = {}, settings = { locale = 42 } } })
+  assertEq(ns2.GetSettings().locale, nil, "type garbage is cleared")
+  assertEq(ns2.GetLocaleCode(), "enUS")
+  local ns3 = loadAddon({})
+  assertEq(_G.FishTipsDB.settings.locale, nil, "nothing is stored unless a choice is made")
+  assertEq(ns3.GetLocaleCode(), "enUS")
+end)
+
+test("locale_slash_command", function()
+  local P = {}
+  local ns, S = loadAddon({ locale = standInLocale("xxXX", P) })
+  local choices = table.concat(ns.GetLocaleCodes(), " | ") .. " | default"
+  assertEq(slash(S, "locale"), PREFIX .. "locale: " .. choices .. "  (showing enUS, set to default)")
+  assertEq(slash(S, "locale xxXX"), PREFIX .. "locale: xxXX. /reload to apply.",
+    "the code matches case-insensitively and is stored in its real spelling")
+  assertEq(ns.GetSettings().locale, "xxXX")
+  assertEq(ns.L.SCOPE_WARBAND, "Warband", "nothing switches until the reload")
+  -- The reload: the same SavedVariables, a fresh addon world.
+  local ns2, S2 = loadAddon({ locale = standInLocale("xxXX"), db = deepCopy(_G.FishTipsDB) })
+  assertEq(ns2.L.SCOPE_WARBAND, P.SCOPE_WARBAND, "after the reload the choice is in effect")
+  assertEq(slash(S2, "locale"), PREFIX .. "locale: " .. choices .. "  (showing xxXX, set to xxXX)")
+  assertEq(slash(S2, "locale klingon"), PREFIX .. "locale: no translation 'klingon'. Available: " .. choices)
+  assertEq(ns2.GetSettings().locale, "xxXX", "a refused code changes nothing")
+  assertEq(slash(S2, "locale enUS"), PREFIX .. "locale: enUS. /reload to apply.")
+  assertEq(ns2.GetSettings().locale, "enUS", "English can be set explicitly")
+  assertEq(slash(S2, "locale default"),
+    PREFIX .. "locale: default (the game client's language). /reload to apply.")
+  assertEq(ns2.GetSettings().locale, nil)
+  local ns3 = loadAddon({ locale = standInLocale("xxXX"), db = deepCopy(_G.FishTipsDB) })
+  assertEq(ns3.GetLocaleCode(), "enUS", "back to the client's language")
+end)
+
+test("stored_data_is_identical_in_every_language", function()
+  -- Only display text is localized: the same outing must store identical data whatever
+  -- language the text renders in.
+  local english, SE = storedDataAfterOuting({})
+  assertTrue(summaryLine(SE) ~= nil, "the English run printed the English summary")
+
+  local P = {}
+  local translated, ST = storedDataAfterOuting({
+    locale = standInLocale("xxXX", P),
+    setup = function(st) st.locale = "xxXX" end,
+  })
+  assertTrue(summaryLine(ST) == nil, "the translated run printed no English summary")
+  assertTrue(summaryLine(ST, P.CHAT_SESSION_ENDED:match("^[^%%]+")) ~= nil, "... it printed the translated one")
+  assertTrue(deepEqual(translated, english), "a translation changes nothing that is stored")
+
+  local chosen = storedDataAfterOuting({
+    locale = standInLocale("xxXX"),
+    db = { version = 1, chars = {}, settings = { locale = "xxXX" } },
+  })
+  assertEq(chosen.settings.locale, "xxXX")
+  chosen.settings.locale = nil  -- the saved choice itself is the only difference
+  assertTrue(deepEqual(chosen, english), "an explicit choice changes nothing else that is stored")
+end)
+
+-- ---------------------------------------------------------------------------
+-- Translation files
+-- ---------------------------------------------------------------------------
+
+test("locale_translation_check_catches_mistakes", function()
+  local check = localeTools.checkTranslation
+  local base = { BAGS = "bags %d", ALT = "%s %d", PLAIN = "plain", DELAY = "%.2fs" }
+  -- Reworded, reordered through the positional form, a changed precision, and the
+  -- game's plural escape: all fine.
+  assertEq(#check(base, {
+    BAGS = "%d |4Tasche:Taschen;",
+    ALT = "%2$d \195\151 %1$s",
+    PLAIN = "schlicht",
+    DELAY = "%.1f Sek.",
+  }), 0)
+  assertEq(check(base, { BAGZ = "Taschen %d" })[1], "BAGZ: not a key of the base locale")
+  assertEq(#check(base, { BAGS = "Taschen" }), 1, "a dropped placeholder")
+  assertEq(#check(base, { BAGS = "Taschen %s" }), 1, "a placeholder of the wrong kind")
+  assertEq(#check(base, { ALT = "%d %s" }), 1, "reordered without the positional form")
+  assertEq(#check(base, { ALT = "%1$s %1$s" }), 1, "an argument used twice, one lost")
+  assertEq(#check(base, { ALT = "%2$d %s" }), 1, "positional and plain placeholders mixed")
+  assertEq(#check(base, { PLAIN = "100% schlicht" }), 1, "a stray percent sign")
+  assertEq(#check(base, { PLAIN = "100%% schlicht" }), 0, "an escaped percent sign is fine")
+  assertEq(#check(base, { PLAIN = "" }), 1, "an empty value")
+  assertEq(#check(base, { PLAIN = true }), 1, "a non-string value")
+end)
+
+test("locale_translation_files_valid", function()
+  -- Every Locales/xxXX.lua the TOC lists besides the base: it registers the client
+  -- language its file name promises and assigns only base keys, placeholders intact.
+  -- (No translation ships yet, so today this loop has nothing to visit -- the first one
+  -- added to the TOC is checked from then on.)
+  for _, file in ipairs(localeTools.tocFiles(root)) do
+    local code = file:match("^Locales/(%w+)%.lua$")
+    if code and file ~= localeTools.BASE_LOCALE then
+      assertTrue(localeTools.LOCALE_CODES[code], file .. ": '" .. code .. "' is not a client language code")
+      stubs.install()
+      local ns = {}
+      assert(loadfile(root .. "Locale.lua"))("FishTips", ns)
+      assert(loadfile(root .. localeTools.BASE_LOCALE))("FishTips", ns)
+      local base = deepCopy(ns.locales.enUS)
+      assert(loadfile(root .. file))("FishTips", ns)
+      local overlay = ns.locales[code]
+      assertTrue(type(overlay) == "table" and next(overlay) ~= nil,
+        file .. " must register '" .. code .. "' and translate something")
+      assertTrue(overlay ~= ns.locales.enUS and deepEqual(ns.locales.enUS, base),
+        file .. " must not write into the base locale")
+      for registered in pairs(ns.locales) do
+        assertTrue(localeTools.LOCALE_CODES[registered],
+          file .. " registers '" .. tostring(registered) .. "', which is not a client language code")
+      end
+      assertEq(table.concat(localeTools.checkTranslation(base, overlay), " | "), "", file)
+    end
+  end
 end)
 
 -- ---------------------------------------------------------------------------

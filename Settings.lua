@@ -35,6 +35,7 @@ local DEFAULTS = {
   priceDetail = "gold",     -- price precision: "gold" | "goldsilver" | "all" (picker deferred; pinned to gold)
   autoOpen = "full",        -- on fishing start, show: "off" | "full" (window) | "collapsed" (strip)
   demo = false,             -- dev: back the seams with the demo dataset
+  locale = nil,             -- text language set explicitly (/ft locale); nil => the client's own
   uiShown = false,
   uiCollapsed = false,
   uiPos = nil,
@@ -98,6 +99,7 @@ local function applyDefaults(s)
   -- gold for now. Restore the validation clamp below when the dropdown is re-enabled:
   --   if s.priceDetail ~= "gold" and ~= "goldsilver" and ~= "all" then s.priceDetail = "goldsilver" end
   s.priceDetail = "gold"
+  if type(s.locale) ~= "string" or s.locale == "" then s.locale = nil end
   s.doubleClickCast = nil  -- obsolete: replaced by castMode
 end
 
@@ -107,6 +109,13 @@ function ns.InitSettings(db)
   applyDefaults(settings)
   ns.settings = settings
   if ns.demoOn == nil then ns.demoOn = settings.demo and true or false end
+  -- An explicitly set text language (/ft locale) outranks the client's own. Applied
+  -- BEFORE the panel registers, so its labels -- and everything built later -- read
+  -- the chosen language. A code that is no longer registered is dropped: the text
+  -- falls back to the client's language, then English.
+  if settings.locale and not ns.SetLocale(settings.locale) then
+    settings.locale = nil
+  end
   RegisterPanel()  -- bind the options panel to this (stable) settings table
 end
 
@@ -129,34 +138,34 @@ end
 -- getter), so the wordings stay current.
 local function CastModeOptions()
   local c = Settings.CreateControlTextContainer()
-  c:Add("off",         L["Disabled"])
-  c:Add("doubleclick", L["Double right-click"])
-  c:Add("key",         L["Keybind (set in Key Bindings)"])
-  c:Add("both",        L["Both"])
+  c:Add("off",         L.CHOICE_CAST_OFF)
+  c:Add("doubleclick", L.CHOICE_CAST_DOUBLECLICK)
+  c:Add("key",         L.CHOICE_CAST_KEY)
+  c:Add("both",        L.CHOICE_CAST_BOTH)
   return c:GetData()
 end
 
 local function AutoOpenOptions()
   local c = Settings.CreateControlTextContainer()
-  c:Add("off",       L["Disabled"])
-  c:Add("full",      L["Full window"])
-  c:Add("collapsed", L["Compact view"])
+  c:Add("off",       L.CHOICE_OPEN_OFF)
+  c:Add("full",      L.CHOICE_OPEN_FULL)
+  c:Add("collapsed", L.CHOICE_OPEN_COMPACT)
   return c:GetData()
 end
 
 local function AlertQualityOptions()
   local c = Settings.CreateControlTextContainer()
-  c:Add("rare", L["Rare or better"])
-  c:Add("epic", L["Epic only"])
+  c:Add("rare", L.CHOICE_ALERT_RARE)
+  c:Add("epic", L.CHOICE_ALERT_EPIC)
   return c:GetData()
 end
 
 local function SessionEndOptions()
   local c = Settings.CreateControlTextContainer()
-  c:Add("idle",     L["After inactivity"])
-  c:Add("zone",     L["When the zone changes"])
-  c:Add("zoneidle", L["Zone change + inactivity"])
-  c:Add("manual",   L["Manually only"])
+  c:Add("idle",     L.CHOICE_SESSION_IDLE)
+  c:Add("zone",     L.CHOICE_SESSION_ZONE)
+  c:Add("zoneidle", L.CHOICE_SESSION_ZONEIDLE)
+  c:Add("manual",   L.CHOICE_SESSION_MANUAL)
   return c:GetData()
 end
 
@@ -175,19 +184,19 @@ function RegisterPanel()
   end
 
   -- Casting -------------------------------------------------------------------------------
-  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Casting"]))
-  local castInit = Settings.CreateDropdown(category, Register("castMode", L["Auto-cast"]),
+  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L.HEADER_CASTING))
+  local castInit = Settings.CreateDropdown(category, Register("castMode", L.OPT_CAST_MODE),
     CastModeOptions,
-    L["How casting is triggered. Off by default -- pick a mode to enable click-to-cast."])
+    L.OPT_CAST_MODE_TIP)
   Settings.SetOnValueChangedCallback(addonName .. "_castMode", function()
     if ns.Casting and ns.Casting.ApplyMode then ns.Casting.ApplyMode() end
   end)
 
   local delayOptions = Settings.CreateSliderOptions(0.1, 1.0, 0.05)
   delayOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right,
-    function(value) return string.format("%.2fs", value) end)
-  local delayInit = Settings.CreateSlider(category, Register("castDelay", L["Double-click delay"]),
-    delayOptions, L["How quickly the two right-clicks must land to count as a double-click."])
+    function(value) return L.UNIT_SECONDS:format(value) end)
+  local delayInit = Settings.CreateSlider(category, Register("castDelay", L.OPT_CAST_DELAY),
+    delayOptions, L.OPT_CAST_DELAY_TIP)
   -- Only meaningful for the double-click paths; gray it out otherwise.
   delayInit:SetParentInitializer(castInit, function()
     return settings.castMode == "doubleclick" or settings.castMode == "both"
@@ -195,17 +204,17 @@ function RegisterPanel()
 
   -- Looting -------------------------------------------------------------------------------
   -- No side-effect callback: Core's loot handler reads settings.autoLoot live on each catch.
-  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Looting"]))
-  Settings.CreateCheckbox(category, Register("autoLoot", L["Auto-loot catches"]),
-    L["Automatically loot everything from a catch. Only applies to fishing loot."])
+  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L.HEADER_LOOTING))
+  Settings.CreateCheckbox(category, Register("autoLoot", L.OPT_AUTO_LOOT),
+    L.OPT_AUTO_LOOT_TIP)
 
   -- Alerts --------------------------------------------------------------------------------
   -- No side-effect callbacks: Core reads both live per loot window, like autoLoot.
-  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Alerts"]))
-  local alertsInit = Settings.CreateCheckbox(category, Register("catchAlerts", L["Alert on rare catches"]),
-    L["Play a sound and print a chat line when you catch something rare. Never opens or moves the stats window."])
-  local alertQualityInit = Settings.CreateDropdown(category, Register("alertQuality", L["Alert threshold"]),
-    AlertQualityOptions, L["The minimum quality that triggers the alert."])
+  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L.HEADER_ALERTS))
+  local alertsInit = Settings.CreateCheckbox(category, Register("catchAlerts", L.OPT_CATCH_ALERTS),
+    L.OPT_CATCH_ALERTS_TIP)
+  local alertQualityInit = Settings.CreateDropdown(category, Register("alertQuality", L.OPT_ALERT_QUALITY),
+    AlertQualityOptions, L.OPT_ALERT_QUALITY_TIP)
   -- A real dependency (the threshold is meaningless with alerts off), so the gray-out
   -- tells the truth -- unlike the Auctionator case below, nesting is wanted here.
   alertQualityInit:SetParentInitializer(alertsInit, function() return settings.catchAlerts end)
@@ -216,35 +225,35 @@ function RegisterPanel()
   -- there is nothing to truthfully nest/gray under. Without Auctionator it's simply
   -- inert; the tooltip says so.
   local valueInit = Settings.CreateCheckbox(category,
-    Register("valueAlerts", L["Alert on high-value catches"]),
-    L["Alert when a single catch's market value meets the threshold below, whatever its quality. Requires the Auctionator addon."])
+    Register("valueAlerts", L.OPT_VALUE_ALERTS),
+    L.OPT_VALUE_ALERTS_TIP)
   local valueOptions = Settings.CreateSliderOptions(10, 1000, 10)
   valueOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right,
-    function(value) return string.format("%dg", value) end)
+    function(value) return L.UNIT_GOLD:format(value) end)
   local valueGoldInit = Settings.CreateSlider(category,
-    Register("alertValueGold", L["Alert when worth at least"]),
-    valueOptions, L["Per-fish market value (from Auctionator) that triggers the alert."])
+    Register("alertValueGold", L.OPT_ALERT_VALUE),
+    valueOptions, L.OPT_ALERT_VALUE_TIP)
   -- This nesting IS truthful: with value alerts off the threshold has no effect.
   valueGoldInit:SetParentInitializer(valueInit, function() return settings.valueAlerts end)
 
   -- Sessions ------------------------------------------------------------------------------
   -- Session boundaries and the clock are judged live in Core (lazily, at the next cast),
   -- so none of these need side-effect callbacks beyond a repaint where the display shifts.
-  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Sessions"]))
-  local sessEndInit = Settings.CreateDropdown(category, Register("sessionEnd", L["Start a new session"]),
+  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L.HEADER_SESSIONS))
+  local sessEndInit = Settings.CreateDropdown(category, Register("sessionEnd", L.OPT_SESSION_END),
     SessionEndOptions,
-    L["When your next cast begins a fresh session. The finished session stays on screen until you fish again."])
+    L.OPT_SESSION_END_TIP)
   local idleOptions = Settings.CreateSliderOptions(5, 120, 5)
   idleOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right,
-    function(value) return string.format("%dm", value) end)
-  local idleInit = Settings.CreateSlider(category, Register("sessionIdleMinutes", L["Inactivity timeout"]),
-    idleOptions, L["How long since your last cast counts as inactivity."])
+    function(value) return L.UNIT_MINUTES:format(value) end)
+  local idleInit = Settings.CreateSlider(category, Register("sessionIdleMinutes", L.OPT_SESSION_IDLE),
+    idleOptions, L.OPT_SESSION_IDLE_TIP)
   -- Only meaningful for the inactivity-based modes; gray it out otherwise.
   idleInit:SetParentInitializer(sessEndInit, function()
     return settings.sessionEnd == "idle" or settings.sessionEnd == "zoneidle"
   end)
-  local pauseInit = Settings.CreateCheckbox(category, Register("sessionPause", L["Pause session when not fishing"]),
-    L["Keeps the fish/hour rate honest: each break between casts counts toward the session timer only up to the pause delay below."])
+  local pauseInit = Settings.CreateCheckbox(category, Register("sessionPause", L.OPT_SESSION_PAUSE),
+    L.OPT_SESSION_PAUSE_TIP)
   Settings.SetOnValueChangedCallback(addonName .. "_sessionPause", function()
     if ns.FireRefresh then ns.FireRefresh() end
   end)
@@ -253,42 +262,42 @@ function RegisterPanel()
   -- sessionPause too) and the gray-out tells the truth.
   local graceOptions = Settings.CreateSliderOptions(1, 15, 1)
   graceOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right,
-    function(value) return string.format("%dm", value) end)
-  local graceInit = Settings.CreateSlider(category, Register("sessionGraceMinutes", L["Pause after"]),
+    function(value) return L.UNIT_MINUTES:format(value) end)
+  local graceInit = Settings.CreateSlider(category, Register("sessionGraceMinutes", L.OPT_SESSION_GRACE),
     graceOptions,
-    L["Minutes after your last cast before the session counts as paused. Caps how much of each break the timer counts, and delays the auto-hide below."])
+    L.OPT_SESSION_GRACE_TIP)
   graceInit:SetParentInitializer(pauseInit, function() return settings.sessionPause end)
   Settings.SetOnValueChangedCallback(addonName .. "_sessionGraceMinutes", function()
     if ns.FireRefresh then ns.FireRefresh() end
   end)
-  local autoHideInit = Settings.CreateCheckbox(category, Register("autoHide", L["Auto-hide stats window"]),
-    L["Tucks away the auto-opened stats window (or compact strip) once the session pauses; it returns on your next cast. A window you opened yourself is never hidden."])
+  local autoHideInit = Settings.CreateCheckbox(category, Register("autoHide", L.OPT_AUTO_HIDE),
+    L.OPT_AUTO_HIDE_TIP)
   autoHideInit:SetParentInitializer(pauseInit, function() return settings.sessionPause end)
 
   -- Stats window --------------------------------------------------------------------------
-  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L["Stats window"]))
-  Settings.CreateDropdown(category, Register("autoOpen", L["Auto-open when fishing"]), AutoOpenOptions,
-    L["What to show when you start fishing: nothing, the full stats window, or the compact strip. Only acts when the window isn't already open -- and if you close it while fishing, it stays closed until your next break."])
-  Settings.CreateCheckbox(category, Register("showMinimap", L["Show minimap button"]),
-    L["Show the Fish & Tips button on the minimap. Either way, the addon stays reachable from the minimap's addon compartment."])
+  layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(L.HEADER_WINDOW))
+  Settings.CreateDropdown(category, Register("autoOpen", L.OPT_AUTO_OPEN), AutoOpenOptions,
+    L.OPT_AUTO_OPEN_TIP)
+  Settings.CreateCheckbox(category, Register("showMinimap", L.OPT_MINIMAP),
+    L.OPT_MINIMAP_TIP)
   Settings.SetOnValueChangedCallback(addonName .. "_showMinimap", function()
     if ns.UI and ns.UI.SetMinimapShown then ns.UI.SetMinimapShown(settings.showMinimap) end
   end)
-  local junkInit = Settings.CreateCheckbox(category, Register("includeJunk", L["Include junk items"]),
-    L["Show gray (junk) catches in the stats window and totals."])
+  local junkInit = Settings.CreateCheckbox(category, Register("includeJunk", L.OPT_INCLUDE_JUNK),
+    L.OPT_INCLUDE_JUNK_TIP)
   Settings.SetOnValueChangedCallback(addonName .. "_includeJunk", function()
     if ns.FireRefresh then ns.FireRefresh() end
   end)
-  local junkSortInit = Settings.CreateCheckbox(category, Register("sortJunkLast", L["Sort junk below real catches"]),
-    L["Keep gray (junk) catches at the bottom of the catch list, below everything else you caught."])
+  local junkSortInit = Settings.CreateCheckbox(category, Register("sortJunkLast", L.OPT_SORT_JUNK),
+    L.OPT_SORT_JUNK_TIP)
   -- A real dependency: with junk hidden there are no junk rows to order, so the
   -- gray-out tells the truth (the alertQuality precedent, not the Auctionator one).
   junkSortInit:SetParentInitializer(junkInit, function() return settings.includeJunk end)
   Settings.SetOnValueChangedCallback(addonName .. "_sortJunkLast", function()
     if ns.FireRefresh then ns.FireRefresh() end
   end)
-  Settings.CreateCheckbox(category, Register("listIcons", L["Show item icons"]),
-    L["Show each catch's item icon in the stats window list."])
+  Settings.CreateCheckbox(category, Register("listIcons", L.OPT_LIST_ICONS),
+    L.OPT_LIST_ICONS_TIP)
   Settings.SetOnValueChangedCallback(addonName .. "_listIcons", function()
     if ns.FireRefresh then ns.FireRefresh() end
   end)
@@ -296,8 +305,8 @@ function RegisterPanel()
   -- Auctionator is installed (ns.PricingActive gates on the API being present). Kept a plain
   -- top-level checkbox -- the only way to gray a Settings control out (SetParentInitializer)
   -- visually nests it under another, which we don't want. Without Auctionator it's simply inert.
-  Settings.CreateCheckbox(category, Register("auctionatorPrices", L["Show Auctionator prices"]),
-    L["Show estimated gold value (from Auctionator) for the current session. Requires the Auctionator addon."])
+  Settings.CreateCheckbox(category, Register("auctionatorPrices", L.OPT_PRICES),
+    L.OPT_PRICES_TIP)
   Settings.SetOnValueChangedCallback(addonName .. "_auctionatorPrices", function()
     if ns.FireRefresh then ns.FireRefresh() end
   end)
@@ -311,10 +320,10 @@ function RegisterPanel()
   local donate = C_AddOns.GetAddOnMetadata(addonName, "X-Donate")
   if donate then
     layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(
-      (L["Enjoying the addon? Buy me a coffee: %s"]):format(donate:gsub("^https?://", ""))))
+      L.FOOTER_DONATE:format(donate:gsub("^https?://", ""))))
   end
   layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(
-    (L["Version %s"]):format(C_AddOns.GetAddOnMetadata(addonName, "Version") or "?")))
+    L.FOOTER_VERSION:format(C_AddOns.GetAddOnMetadata(addonName, "Version") or "?")))
 
   Settings.RegisterAddOnCategory(category)
 end
@@ -346,7 +355,7 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if rest == "classic" or rest == "modern" or rest == "blend" then
       ns.SetSetting("theme", rest)
       if ns.UI and ns.UI.ApplyTheme then ns.UI.ApplyTheme(rest) end
-      say((L["theme set to %s."]):format(rest))
+      say(L.CHAT_SET_THEME:format(rest))
     else
       say("theme: classic | modern | blend")
     end
@@ -354,21 +363,21 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if rest == "off" or rest == "doubleclick" or rest == "key" or rest == "both" then
       settings.castMode = rest
       if ns.Casting and ns.Casting.ApplyMode then ns.Casting.ApplyMode() end
-      say((L["cast mode: %s."]):format(rest))
+      say(L.CHAT_SET_CAST:format(rest))
     else
       say("cast: off | doubleclick | key | both")
     end
   elseif cmd == "session" then
     if rest == "manual" or rest == "idle" or rest == "zone" or rest == "zoneidle" then
       settings.sessionEnd = rest
-      say((L["new sessions start: %s."]):format(rest))
+      say(L.CHAT_SET_SESSION:format(rest))
     else
       say("session: manual | idle | zone | zoneidle  (currently " .. (settings.sessionEnd or "idle") .. ")")
     end
   elseif cmd == "autoloot" then
     if rest == "on" or rest == "off" then
       settings.autoLoot = (rest == "on")
-      say((L["auto-loot %s."]):format(rest))
+      say(L.CHAT_SET_AUTO_LOOT:format(rest))
     else
       say("autoloot: on | off  (currently " .. (settings.autoLoot ~= false and "on" or "off") .. ")")
     end
@@ -376,21 +385,21 @@ SlashCmdList["FISHTIPS"] = function(msg)
     local sub, arg = rest:match("^(%S*)%s*(.-)$")
     if rest == "on" or rest == "off" then
       settings.catchAlerts = (rest == "on")
-      say((L["catch alerts %s."]):format(rest))
+      say(L.CHAT_SET_ALERTS:format(rest))
     elseif rest == "rare" or rest == "epic" then
       settings.alertQuality = rest
-      say((L["alert threshold: %s."]):format(rest))
+      say(L.CHAT_SET_ALERT_QUALITY:format(rest))
     elseif sub == "value" then
       if arg == "on" or arg == "off" then
         settings.valueAlerts = (arg == "on")
-        say((L["value alerts %s."]):format(arg))
+        say(L.CHAT_SET_VALUE_ALERTS:format(arg))
       elseif tonumber(arg) then
         -- Clamp to the slider's range and ECHO what was applied -- never silently
         -- accept an out-of-range number.
         local n = math.floor(tonumber(arg) + 0.5)
         if n < 10 then n = 10 elseif n > 1000 then n = 1000 end
         settings.alertValueGold = n
-        say((L["value alert threshold: %dg."]):format(n))
+        say(L.CHAT_SET_ALERT_VALUE:format(n))
       else
         say("alerts value: on | off | <10-1000>  (currently "
           .. (settings.valueAlerts and "on" or "off")
@@ -432,7 +441,7 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if rest == "on" or rest == "off" then
       settings.includeJunk = (rest == "on")
       if ns.FireRefresh then ns.FireRefresh() end
-      say((L["junk items %s."]):format(rest))
+      say(L.CHAT_SET_JUNK:format(rest))
     else
       say("junk: on | off  (currently " .. (settings.includeJunk ~= false and "on" or "off") .. ")")
     end
@@ -440,7 +449,7 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if rest == "on" or rest == "off" then
       settings.sortJunkLast = (rest == "on")
       if ns.FireRefresh then ns.FireRefresh() end
-      say((L["junk sort %s."]):format(rest))
+      say(L.CHAT_SET_JUNK_SORT:format(rest))
     else
       say("junksort: on | off  (currently " .. (settings.sortJunkLast ~= false and "on" or "off") .. ")")
     end
@@ -448,7 +457,7 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if rest == "on" or rest == "off" then
       settings.listIcons = (rest == "on")
       if ns.FireRefresh then ns.FireRefresh() end
-      say((L["list icons %s."]):format(rest))
+      say(L.CHAT_SET_ICONS:format(rest))
     else
       say("icons: on | off  (currently " .. (settings.listIcons ~= false and "on" or "off") .. ")")
     end
@@ -456,7 +465,7 @@ SlashCmdList["FISHTIPS"] = function(msg)
     if rest == "on" or rest == "off" then
       settings.auctionatorPrices = (rest == "on")
       if ns.FireRefresh then ns.FireRefresh() end
-      say((L["auctionator prices %s."]):format(rest))
+      say(L.CHAT_SET_PRICES:format(rest))
     else
       say("auc: on | off  (currently " .. (settings.auctionatorPrices and "on" or "off") .. ")")
     end
@@ -464,6 +473,30 @@ SlashCmdList["FISHTIPS"] = function(msg)
     ns.castDebug = not ns.castDebug
     say("cast debug " .. (ns.castDebug and "on." or "off."))
     if ns.Casting and ns.Casting.Debug then ns.Casting.Debug() end
+  elseif cmd == "locale" then
+    -- Dev-only (like demo): set the text language explicitly, to check a translation on
+    -- any client. Saved rather than applied live: the options panel and the window's
+    -- buttons are built once, so the choice takes effect through a /reload.
+    local codes = ns.GetLocaleCodes()
+    local choices = table.concat(codes, " | ") .. " | default"
+    if rest == "" then
+      say("locale: " .. choices .. "  (showing " .. ns.GetLocaleCode()
+        .. ", set to " .. (settings.locale or "default") .. ")")
+    elseif rest == "default" then
+      settings.locale = nil
+      say("locale: default (the game client's language). /reload to apply.")
+    else
+      local match  -- the input was lowercased with the rest of the command; codes are not
+      for _, code in ipairs(codes) do
+        if code:lower() == rest then match = code end
+      end
+      if match then
+        settings.locale = match
+        say("locale: " .. match .. ". /reload to apply.")
+      else
+        say("locale: no translation '" .. rest .. "'. Available: " .. choices)
+      end
+    end
   elseif cmd == "demo" then
     local on
     if rest == "on" then on = true

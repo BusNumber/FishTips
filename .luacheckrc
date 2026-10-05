@@ -32,4 +32,5 @@ read_globals = {
   "AddonCompartmentFrame",  -- tooltip anchor fallback for the compartment entry
   "CreateSettingsListSectionHeaderInitializer", "MinimalSliderWithSteppersMixin",
   "Auctionator",  -- Auctionator's public v1 API, present only if installed
+  "GetLocale",  -- the client's language (Locale.lua picks which locale is shown)
 }

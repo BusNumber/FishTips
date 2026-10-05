@@ -43,15 +43,24 @@ work will be declined.
    alert through the real loot pipeline — an in-memory override that is never saved, so it
    clears at logout or `/reload` (it doesn't bypass the **Alert on rare catches** enable
    checkbox, only the quality threshold). Both **dev-only**.
+7. To check a translation on any client, `/ft locale <code>` then `/reload` shows the
+   addon in that language whatever the game client's own language is (`/ft locale enUS`
+   forces English on a translated client). `/ft locale default` returns to the normal
+   order — the client's language, falling back to English — and bare `/ft locale` lists
+   the registered languages and what is showing. The choice is saved (it has to survive
+   the `/reload` that applies it) and stays until changed. Also **dev-only**.
 
 Code conventions: the Lua files share the private addon table via the
 `local addonName, ns = ...` vararg. Keep the data/presentation split — new data sources
 and game-state logic go in `Core.lua` behind the `ns.Get*` seams; `UI.lua` reads only
 through those seams. Secure-frame code stays isolated in `Casting.lua` to contain taint.
-User-facing strings go through **`ns.L["..."]`** (defined in `Locale.lua`, first in the
-TOC) — the English string is the key, and format strings are wrapped whole
-(`ns.L["+%d more"]`) so translations can reorder words. Slash tokens, dev-only output,
-texture paths, and the "Fish & Tips" brand stay as plain literals.
+Display text never goes inline: every string the addon shows is a key in
+**`Locales/enUS.lua`**, read as `L.KEY` — never `L[expr]`, the suite checks keys by
+scanning the source (DESIGN.md's Localization section has the rules). A count with its
+noun goes through **`ns.Plural(n, L.X_ONE, L.X_MANY)`** — never an inline `n == 1` — and
+grouped digits through **`ns.FormatNumber(n)`**. Slash tokens and usage lines, dev-only
+output, texture paths, and the "Fish & Tips" brand stay as plain literals. Localization
+is display-only: nothing written to SavedVariables may depend on the text language.
 
 ## Static checks & automated tests
 
@@ -79,14 +88,61 @@ Auctionator pricing seams (an opt-in stub via `setPrices` — active/off gates, 
 value math, the junk filter, the gold/hour rate and its nil cases, lifetime totals
 carrying no clock), the value-based catch alerts (unit-price basis, the merged payload's
 `value` field, independence from both the quality path and the price-overlay setting,
-inert without Auctionator), and the session-end summary's value line (priced, unpriced,
-and demo-guarded).
+inert without Auctionator), the session-end summary's value line (priced, unpriced,
+and demo-guarded), and the string table: the exact English chat lines, slash replies,
+and options-slider labels (the "English never changes by accident" pins; the options
+panel registers against an opt-in recording stub via `installSettingsPanel`); every key
+the code reads is defined in `Locales/enUS.lua` and every key defined there is read;
+which language is shown (an explicit choice, then the client's language, then English);
+with a stand-in translation loaded, every chat line and options-panel string comes out
+translated (nothing hard-coded is left in the files the suite can load) and the same
+scripted outing stores identical SavedVariables; a translation file may only assign
+existing keys, with their placeholders intact.
+
+The suite reads its load list from the TOC, so a translation added there is loaded and
+checked automatically. New display text means a new key in `Locales/enUS.lua` — the
+suite fails until the code reads it, and for `Core.lua` / `Settings.lua` until some test
+actually displays it. `tests/locale_tools.lua` holds the source scan, so the key check
+also covers `UI.lua` and `Casting.lua`.
 
 `UI.lua` and `Casting.lua` are deliberately **not** loaded — rendering and secure-binding
 behavior can't be meaningfully stubbed; those claims belong on the in-game checklist
 below. When adding data-layer behavior, add a test; when a claim needs the real client,
 add a checklist item instead. CI (GitHub Actions) runs luacheck, a syntax pass over every
 Lua file, and this suite on each push/PR.
+
+## Adding a translation
+
+Only English ships today, but every displayed string already comes from one table, so a
+translation needs no code changes:
+
+1. Copy `Locales/enUS.lua` to `Locales/xxXX.lua`, where `xxXX` is the client's locale
+   code (`deDE`, `frFR`, `ruRU`, `zhCN`, …), and change the one line that names the
+   language:
+
+   ```lua
+   local L = ns.NewLocale("xxXX")
+   ```
+
+   One file can serve two clients: `ns.NewLocale("esES", "esMX")`.
+2. Translate the values; never rename a key. Lines you leave out (or delete) simply
+   stay English, so a partial translation is fine.
+3. Keep every placeholder (`%s`, `%d`, `%.2f`). To reorder them, use the positional form
+   (`%2$d … %1$s`; the numbers are the English order). A literal percent sign is `%%`.
+   Where a count needs proper plural forms, the game's own escape works inside a value:
+   `%d |4cast:casts;`.
+4. Save as UTF-8 without a BOM, one string per line.
+5. Add `Locales\xxXX.lua` to `FishTips.toc`, on the line after `Locales\enUS.lua`. The
+   AddOns-list text can be translated there too, with `## Title-xxXX:` and
+   `## Notes-xxXX:` lines.
+6. Run `luajit tests/run_tests.lua` — it picks the new file up from the TOC and checks
+   that it only uses existing keys and keeps their placeholders.
+7. Try it in game: restart the client (a new file is not picked up by `/reload`). On a
+   client in that language it is shown automatically; on any other, `/ft locale xxXX`
+   and `/reload`.
+
+Not translated, on purpose: the addon's name, the `/ft` command with its sub-command
+words and usage lines, and item and zone names, which are the game's own text.
 
 ## In-game verification
 
@@ -327,3 +383,26 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       back to **Session** restores them.
 - [ ] With **Include junk items** off, a gray fish's value drops out of the session total too
       (the total stays consistent with the visible list).
+
+### String table
+
+- [ ] After a full client restart (a newly added file or folder is not picked up by
+      `/reload`): open the stats window in both views, the compact strip, the options
+      panel, hover the minimap/compartment entry, and let a session end. All text reads
+      as normal English, exactly as before, and numbers group with commas. The one
+      deliberate difference: the session-end chat line says `1 cast` / `1 catch` for a
+      count of one.
+- [ ] A Lua error about `ns.NewLocale` or `ns.L` (a nil value) means `Locale.lua` did
+      not load first; an ALL_CAPS key name on screen (`LIST_EMPTY`, `OPT_AUTO_LOOT`)
+      means `Locales\enUS.lua` did not load, or the code reads a key it doesn't define —
+      check the TOC lines.
+- [ ] Key Bindings still shows **Cast Fishing** under the **Fish & Tips** category, and
+      the **New session** button's confirmation shows its question.
+- [ ] `/ft locale` lists `enUS | default`; `/ft locale enUS`, `/ft locale default` and a
+      made-up code each answer sensibly, and nothing changes on screen (only English is
+      registered). With a translation file added: `/ft locale <code>` + `/reload` shows
+      it everywhere, including the options panel, the Key Bindings label and the
+      New-session confirmation; `/ft locale default` + `/reload` returns to the client's
+      language.
+- [ ] **Saved data is untouched** by a language switch: catches, zones, and settings
+      read the same before and after.

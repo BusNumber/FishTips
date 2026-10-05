@@ -22,7 +22,7 @@ jobs:
       # so the test run alone would not catch a syntax error there).
       - name: Syntax check
         run: |
-          for f in *.lua tests/*.lua; do
+          for f in *.lua Locales/*.lua tests/*.lua; do
             luajit -bl "$f" > /dev/null || exit 1
           done
       - name: Run data-layer tests

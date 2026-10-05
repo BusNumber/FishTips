@@ -32,6 +32,9 @@ doc — if you're about to change behavior, check here first.
 > footer + compact strip, and the session-end summary gains the closing session's value —
 > see *What it does* §4), and **value-based catch alerts** (`valueAlerts`, default off —
 > a second, independent alert path on unit market price — see *What it does* §6).
+> And a **string table** (v1.6.1): every piece of displayed text is a symbolic key
+> defined in `Locales/enUS.lua`, so a translation is one more file -- **only English
+> ships**, and it reads exactly as before (see *Architecture* -> Localization).
 > A **LuaJIT test harness** (`tests/`, run in CI) asserts the
 > data-layer invariants out of game. Still roadmap: **junk auto-discard** (auto-selling or
 > throwing back gray catches — see Deferred/roadmap).
@@ -346,15 +349,17 @@ it never bypasses the enable checkbox).
 ```
 ### FishTips.toc
 Manifest. `## Title: Fish & Tips`, `## SavedVariables: FishTipsDB`.
-Loads Locale.lua, Core.lua, Casting.lua, UI.lua, Settings.lua (order matters).
+Loads Locale.lua, Locales\enUS.lua, Core.lua, Casting.lua, UI.lua, Settings.lua (order
+matters).
 
 ### Locale.lua
-Localization scaffold, loaded FIRST so every file can reference it. `ns.L` maps English
-keys -> translated strings with an identity fallback (a missing key returns itself), so
-English needs no table and a missing translation can never break a render. User-facing
-strings go through `ns.L["..."]`; format strings are wrapped whole (`ns.L["+%d more"]`)
-so translations can reorder words. Excluded on purpose: the "Fish & Tips" brand, slash
-tokens and token-list help, dev-only output (/ft demo, /ft castdebug), texture paths.
+The string-table mechanism, loaded FIRST: owns `ns.L` (the table every displayed word is
+read from), the locale registry, the choice of which language is shown, and the two
+locale-aware helpers (`ns.Plural`, `ns.FormatNumber`). See Localization below.
+
+### Locales/enUS.lua
+The base locale: defines every string key, in English. Loads right after Locale.lua, and
+any translation (`Locales/<code>.lua`) right after it, before Core.lua.
 
 ### Core.lua
 Data layer: SavedVariables DB + fishing-state detection + loot read/auto-loot +
@@ -442,6 +447,70 @@ the data/presentation split**: new data sources go in the data layer; `UI.lua` r
 through the `ns.Get*` seams. Start-up hand-off: Core's
 `ADDON_LOADED` handler initializes the DB then calls `ns.InitSettings(db)`;
 `ns.GetSettings()` returns nil until then and callers treat nil as default behavior.
+
+### Localization
+
+Every word the addon displays lives in one string table, `ns.L`, whose keys are defined
+by `Locales/enUS.lua` — the **base locale**: it defines every key and is what any client
+without a translation shows. Only English ships today; the layer exists so that a
+translation is one more file (`Locales/xxXX.lua`) plus one TOC line, with no code
+changes. CONTRIBUTING.md has the translator's steps.
+
+- **Symbolic keys** (`L.OPT_AUTO_LOOT`), not English-phrase keys. Rewording the English
+  never orphans a translation (a phrase key silently falls back to English the moment
+  its source text changes), one English word in two roles stays two strings
+  (`Disabled` is both a cast-mode and an auto-open choice), and the panel's
+  sentence-long tooltips stay out of the code. The cost — code no longer shows its own
+  wording inline — is what the base file's grouping comments are for.
+- **Which language is shown**, in priority order: (1) a locale set explicitly, (2) the
+  game client's language when a translation for it is registered, (3) enUS. A string a
+  translation leaves out falls back to English on its own. The explicit choice is the
+  dev-only `/ft locale <code>` (CONTRIBUTING.md), there so a translation can be checked
+  on any client; `/ft locale default` clears it.
+- **The choice needs a `/reload`, so it is saved.** The options panel's labels are
+  registered once and the window's fixed buttons are built once, so a live switch would
+  leave them in the old language. The choice lives in `settings.locale` (absent by
+  default) and is applied at `ADDON_LOADED`, before the panel registers.
+- **Locale files do not gate themselves on `GetLocale()`.** Saved settings do not exist
+  yet while files load, so a file that skipped itself on the wrong client could never be
+  chosen afterwards. Instead every locale file — enUS included — registers its table
+  with `ns.NewLocale("<code>")`, and `Locale.lua` picks the active one centrally. `ns.L`
+  is a lookup over that choice: the active translation, then enUS, then the key's own
+  name.
+- **Strings handed to the game at file load** (the Key Bindings label, the New-session
+  prompt) are set through `ns.OnLocale`, which runs again when the active locale
+  changes, so the explicit choice reaches them too.
+- **Only display text is localized. Nothing stored is**: DB keys (zone and subzone
+  names), saved item names and links, setting values, the session snapshot, and slash
+  tokens are identical in every language — a test runs the same outing in English and
+  under a translation and requires identical SavedVariables. `Core.lua` does read the
+  table, but only to print its own chat lines and to label the Warband scope.
+- **Format strings, not concatenation**, wherever a word meets a value
+  (`"+%d more"`, `"Nice catch: %s x%d"`), so a translation can move the number. The
+  game's `string.format` accepts positional arguments (`%2$d`) for reordering; stock
+  Lua does not, so the base locale — the one the headless suite runs — sticks to plain
+  placeholders.
+- **Counted nouns** get a singular and a plural key (`CASTS_ONE` / `CASTS_MANY`) picked
+  by `n == 1` through `ns.Plural`. A language with other plural rules uses the client's
+  own plural escape inside the value (`"%d |4cast:casts;"`), which the game resolves
+  when it draws the text.
+- **Grouped digits** go through `ns.FormatNumber`, whose separator is itself a key
+  (`THOUSANDS_SEPARATOR`), so number style follows the text language.
+- **Deliberately not in the table**: the *Fish & Tips* name (one name in every language,
+  so screenshots and bug reports stay recognizable), the `/ft` command, its sub-command
+  words and their usage lines, dev-only output (`/ft demo`, `/ft castdebug`,
+  `/ft locale`), item and zone names (the game's own text), texture paths, and the
+  punctuation gluing segments together. The reset prompt's buttons are Blizzard's own
+  `YES` / `NO`.
+- **A missing key reads back as its own name**, so a typo renders as visible ALL_CAPS
+  text instead of throwing inside a render. The suite, not the fallback, is what keeps
+  typos out: every key the code reads must be defined, and every defined key must be
+  read.
+- **No dynamic lookups**: code reads the table only as `L.KEY`, never `L[expr]`, so that
+  key check can stay a plain scan of the source — which is also what covers `UI.lua` and
+  `Casting.lua`, the two files the headless suite cannot load.
+- The TOC's own text localizes separately, through `## Title-xxXX` / `## Notes-xxXX`
+  lines.
 
 ### Data seams (UI ↔ Core)
 
@@ -808,6 +877,11 @@ These plug in behind the existing seams without changing the UI layer:
   the one-line chat summary survives. A "recent sessions" view (per-session tally, where,
   when) would plug in behind the seams by retaining the last N closed session structs in
   the disposable snapshot slot — same disposable-data policy, no migration burden.
+- **First translations** — the string table is in place (see *Architecture* →
+  Localization) and CONTRIBUTING.md has the translator's steps, but only English ships.
+  One known follow-up for whoever lands the first one: the window's geometry is
+  fixed-width (the mode buttons, the footer against the gold block, the Top-zones
+  names), so longer text may need layout room.
 - **Customizable themes** — the UI already carries a theme engine (palettes + body layouts)
   scaffolded behind `ApplyTheme`, currently locked to one look with no user-facing chooser.
   Exposing theme selection (and/or per-element color options) plugs in here without touching

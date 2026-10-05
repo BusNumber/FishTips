@@ -246,16 +246,11 @@ local function qcolor(q)
   return 1, 1, 1
 end
 
-local function catchWord(n) return n == 1 and L["catch"] or L["catches"] end
-
-local function fmtNum(n)
-  n = n or 0
-  local s = tostring(math.floor(n + 0.5))
-  local sign, digits = s:match("^(%-?)(%d+)$")
-  if not digits then return s end
-  digits = digits:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
-  return sign .. digits
-end
+-- Counted nouns and grouped digits come from the locale layer (plural rules and the
+-- thousands separator differ per language).
+local function castsStr(n) return ns.Plural(n, L.CASTS_ONE, L.CASTS_MANY) end
+local function catchesStr(n) return ns.Plural(n, L.CATCHES_ONE, L.CATCHES_MANY) end
+local fmtNum = ns.FormatNumber
 
 -- Money string. Auctionator prices come in copper; precision is the `priceDetail` setting:
 -- "gold" (floor to whole gold), "goldsilver", or "all". nil copper => "?" (no price data).
@@ -287,19 +282,21 @@ local function sessionValueStr()
   local v = goldStr(ns.GetSessionValue())
   local rate = ns.GetSessionValueRate()
   -- Two spaces before the paren: the icon escape's 2px x-offset visually eats one.
-  if rate then return (L["%s  (%s/hr)"]):format(v, goldStr(rate)) end
+  if rate then return L.VALUE_WITH_RATE:format(v, goldStr(rate)) end
   return v
 end
 
 -- Confirmation for the "New session" button -- guards against an accidental session wipe.
 -- The lifetime history is untouched; only the in-memory session counts/timer reset.
 StaticPopupDialogs["FISHTIPS_RESET_SESSION"] = {
-  text = L["Start a new session? This clears the current session's catches and timer. Your lifetime history is kept."],
   button1 = YES,
   button2 = NO,
   OnAccept = function() if ns.ResetSession then ns.ResetSession() end end,
   timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
 }
+-- The prompt's text: set now and again if the text language changes (an explicit locale
+-- choice applies after this file has loaded).
+ns.OnLocale(function() StaticPopupDialogs["FISHTIPS_RESET_SESSION"].text = L.POPUP_NEW_SESSION end)
 
 -- Body-only (pooled): called from the two body builders each rebuild.
 local function makeBadge(parent, p, text)
@@ -443,7 +440,7 @@ local function renderRow(body, p, it, y, maxCount, total, priced, icons)
   local rightInset = 82
   if it.isNew then
     local tag = bodyFS(row, 10, p.accent)
-    tag:SetText(L["New!"])
+    tag:SetText(L.TAG_NEW)
     tag:SetPoint("TOPRIGHT", -84, -2)
     rightInset = 84 + tag:GetStringWidth() + 4
   end
@@ -477,7 +474,7 @@ local function renderItems(body, p, data, y)
   local items = data.items
   if #items == 0 then
     local none = bodyFS(body, 12, p.textSecondary)
-    none:SetPoint("TOPLEFT", PAD, y - 2); none:SetText(L["No catches here yet."])
+    none:SetPoint("TOPLEFT", PAD, y - 2); none:SetText(L.LIST_EMPTY)
     return y - 24
   end
   -- Windowed scrolling: UI.listOffset indexes into the full list and lives outside the
@@ -516,13 +513,13 @@ local function renderItems(body, p, data, y)
     local fs = bodyFS(more, 11, p.textSecondary)
     fs:SetPoint("LEFT", 0, 0)
     if off < maxOffset then
-      fs:SetText((L["+%d more"]):format(#items - off - shown) .. "  v")
+      fs:SetText(L.LIST_MORE:format(#items - off - shown) .. "  v")
       more.onAction = function()
         UI.listOffset = math.min(off + MAX_LIST_ROWS, maxOffset)
         UI.RebuildBody()
       end
     else
-      fs:SetText(L["Back to top"] .. "  ^")
+      fs:SetText(L.LIST_BACK_TO_TOP .. "  ^")
       more.onAction = function() UI.listOffset = 0; UI.RebuildBody() end
     end
     y = y - 18
@@ -552,7 +549,7 @@ local function BuildBody_Classic(body, p, data)
   local loc = bodyFS(hero, 13, p.textPrimary)
   loc:SetPoint("TOPLEFT", 10, -8); loc:SetText(locText(data.loc))
   if data.loc.isSpecialPool then
-    local badge = makeBadge(hero, p, L["Special pool"])
+    local badge = makeBadge(hero, p, L.BADGE_SPECIAL_POOL)
     badge:SetPoint("TOPRIGHT", -8, -7)
   end
   local function stat(ax, value, label, color)
@@ -563,14 +560,14 @@ local function BuildBody_Classic(body, p, data)
   end
   local totals = (data.mode == "session") and data.session or data.lifetime
   local rate = totals.ratePerHour and tostring(totals.ratePerHour) or "-"
-  stat(12, tostring(totals.catches), L["catches"])
-  stat(120, tostring(totals.casts), L["casts"])
-  stat(216, rate, L["fish / hr"], p.accent)
+  stat(12, tostring(totals.catches), L.STAT_CATCHES)
+  stat(120, tostring(totals.casts), L.STAT_CASTS)
+  stat(216, rate, L.STAT_RATE, p.accent)
   y = y - 58 - 10
 
   local lbl = bodyFS(body, 11, p.textSecondary)
   lbl:SetPoint("TOPLEFT", PAD, y)
-  lbl:SetText(data.mode == "session" and L["Catches (this session)"] or L["Catches (lifetime)"])
+  lbl:SetText(data.mode == "session" and L.LIST_TITLE_SESSION or L.LIST_TITLE_LIFETIME)
   y = y - 18
 
   y = renderItems(body, p, data, y)
@@ -585,12 +582,10 @@ local function BuildBody_Classic(body, p, data)
   local ftext
   if data.mode == "session" then
     local mins = math.floor((t.elapsed or 0) / 60 + 0.5)
-    ftext = string.format(L["%d casts    %d %s    %s/hr    %dm"],
-      t.casts, t.catches, catchWord(t.catches), t.ratePerHour or 0, mins)
+    ftext = string.format(L.STATLINE_SESSION,
+      castsStr(t.casts or 0), catchesStr(t.catches), t.ratePerHour or 0, mins)
   else
-    local casts = t.casts or 0
-    ftext = string.format(L["%d %s    %d %s"],
-      casts, casts == 1 and L["cast"] or L["casts"], t.catches, catchWord(t.catches))
+    ftext = string.format("%s    %s", castsStr(t.casts or 0), catchesStr(t.catches))
   end
   local ff = bodyFS(footer, 11, p.textSecondary)
   ff:SetPoint("LEFT", 8, 0); ff:SetText(ftext)
@@ -620,14 +615,14 @@ local function BuildBody_Tiles(body, p, data)
   local loc = bodyFS(block, 13, p.textPrimary)
   loc:SetPoint("LEFT", 10, 0); loc:SetText(locText(data.loc))
   if data.loc.isSpecialPool then
-    local badge = makeBadge(block, p, L["Special pool"])
+    local badge = makeBadge(block, p, L.BADGE_SPECIAL_POOL)
     badge:SetPoint("RIGHT", -8, 0)
   end
   y = y - 32 - 10
 
   local lbl = bodyFS(body, 11, p.textSecondary)
   lbl:SetPoint("TOPLEFT", PAD, y)
-  lbl:SetText(data.mode == "session" and L["Catches (this session)"] or L["Catches (lifetime)"])
+  lbl:SetText(data.mode == "session" and L.LIST_TITLE_SESSION or L.LIST_TITLE_LIFETIME)
   y = y - 18
 
   y = renderItems(body, p, data, y)
@@ -638,7 +633,7 @@ local function BuildBody_Tiles(body, p, data)
     divider:SetPoint("TOPLEFT", PAD, y); divider:SetSize(INNER, 1)
     y = y - 9
     local zlbl = bodyFS(body, 11, p.textSecondary)
-    zlbl:SetPoint("TOPLEFT", PAD, y); zlbl:SetText(L["Top zones"])
+    zlbl:SetPoint("TOPLEFT", PAD, y); zlbl:SetText(L.ZONES_TITLE)
     y = y - 18
 
     local zones = data.zones or {}  -- gatherData only walks zones when this chart renders
@@ -665,7 +660,7 @@ local function BuildBody_Tiles(body, p, data)
     end
     if zshown == 0 then
       local none = bodyFS(body, 11, p.textSecondary)
-      none:SetPoint("TOPLEFT", PAD, y); none:SetText(L["No zones tracked yet."])
+      none:SetPoint("TOPLEFT", PAD, y); none:SetText(L.ZONES_EMPTY)
       y = y - 18
     end
   end
@@ -678,16 +673,13 @@ local function BuildBody_Tiles(body, p, data)
   footer:SetPoint("TOPLEFT", PAD, y); footer:SetSize(INNER, 24)
   local fbg = bodyTex(footer, { 1, 1, 1, 0.04 }); fbg:SetAllPoints()
   local t = data.mode == "session" and data.session or data.lifetime
-  local casts = t.casts or 0
   local ftext
   if data.mode == "session" then
     local mins = math.floor((t.elapsed or 0) / 60 + 0.5)
-    ftext = string.format(L["%d %s    %d %s    %s/hr    %dm"],
-      casts, casts == 1 and L["cast"] or L["casts"], t.catches,
-      catchWord(t.catches), t.ratePerHour or 0, mins)
+    ftext = string.format(L.STATLINE_SESSION,
+      castsStr(t.casts or 0), catchesStr(t.catches), t.ratePerHour or 0, mins)
   else
-    ftext = string.format(L["%d %s    %d %s"],
-      casts, casts == 1 and L["cast"] or L["casts"], t.catches, catchWord(t.catches))
+    ftext = string.format("%s    %s", castsStr(t.casts or 0), catchesStr(t.catches))
   end
   local ff = bodyFS(footer, 11, p.textSecondary)
   ff:SetPoint("LEFT", 8, 0); ff:SetText(ftext)
@@ -898,9 +890,9 @@ local function BuildWindow()
     UI.modeBtns[key] = btn
     return btn
   end
-  local lifeBtn = modeBtn(L["Lifetime"], "lifetime")
+  local lifeBtn = modeBtn(L.MODE_LIFETIME, "lifetime")
   lifeBtn:SetPoint("RIGHT", 0, 0)
-  local sessBtn = modeBtn(L["Session"], "session")
+  local sessBtn = modeBtn(L.MODE_SESSION, "session")
   sessBtn:SetPoint("RIGHT", lifeBtn, "LEFT", 4, 0)
 
   -- "New session" action -- sits left of the Session/Lifetime selector, shown in Session view
@@ -910,7 +902,7 @@ local function BuildWindow()
   newSess:SetSize(96, 20)
   newSess.bg = MakeTex(newSess, { 1, 1, 1, 0.04 }); newSess.bg:SetAllPoints()
   newSess.fs = MakeFS(newSess, 12, { 0.6, 0.6, 0.6 })
-  newSess.fs:SetPoint("CENTER"); newSess.fs:SetText(L["New session"])
+  newSess.fs:SetPoint("CENTER"); newSess.fs:SetText(L.BTN_NEW_SESSION)
   -- Left edge of the controls row -- the same slot the scope dropdown uses in Lifetime view.
   -- They never show together (scope = Lifetime only, this = Session only), so sharing it is fine.
   newSess:SetPoint("LEFT", 0, 0)
@@ -959,8 +951,8 @@ function UI.RefreshCompact()
   local where = (loc.subZone and loc.subZone ~= "") and loc.subZone or loc.zone
   local p = PALETTES[UI.themeKey or "blend"]
   setTex(UI.compact.icon, p.accent)
-  local txt = string.format("%s    %d %s    %s/hr",
-    where, t.catches, catchWord(t.catches), t.ratePerHour or 0)
+  local txt = string.format(L.STATLINE_COMPACT,
+    where, catchesStr(t.catches), t.ratePerHour or 0)
   -- The strip is inherently session, so show the session value + gold/hr pair
   -- whenever pricing is on.
   if ns.PricingActive and ns.PricingActive() then
@@ -1047,8 +1039,8 @@ function UI.BuildMinimap()
   b:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
     GameTooltip:AddLine("Fish & Tips")
-    GameTooltip:AddLine(L["Left-click to show the stats window."], 0.8, 0.8, 0.8)
-    GameTooltip:AddLine(L["Right-click for options."], 0.8, 0.8, 0.8)
+    GameTooltip:AddLine(L.TIP_LEFT_CLICK, 0.8, 0.8, 0.8)
+    GameTooltip:AddLine(L.TIP_RIGHT_CLICK, 0.8, 0.8, 0.8)
     GameTooltip:Show()
   end)
   b:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -1088,8 +1080,8 @@ function FishTips_OnAddonCompartmentEnter(_, anchor)
   if not owner then return end
   GameTooltip:SetOwner(owner, "ANCHOR_LEFT")
   GameTooltip:AddLine("Fish & Tips")
-  GameTooltip:AddLine(L["Left-click to show the stats window."], 0.8, 0.8, 0.8)
-  GameTooltip:AddLine(L["Right-click for options."], 0.8, 0.8, 0.8)
+  GameTooltip:AddLine(L.TIP_LEFT_CLICK, 0.8, 0.8, 0.8)
+  GameTooltip:AddLine(L.TIP_RIGHT_CLICK, 0.8, 0.8, 0.8)
   GameTooltip:Show()
 end
 
@@ -1113,7 +1105,7 @@ local function suppressAuto()
   UI.autoSuppressed = true
   if hintShown then return end
   hintShown = true
-  print("|cffffd36eFish & Tips|r: " .. L["Stats window hidden -- it won't auto-open again until after your next fishing break. /ft or the minimap addon drawer reopens it anytime."])
+  print("|cffffd36eFish & Tips|r: " .. L.CHAT_AUTO_OPEN_HINT)
 end
 
 function UI.Toggle()
@@ -1228,14 +1220,14 @@ ef:SetScript("OnEvent", function()
       -- without the number, a white-quality alert would read like a bug.
       if it.value then
         if (it.count or 1) > 1 then
-          ns.Say((L["Nice catch: %s x%d (~%s)"]):format(label, it.count, goldStr(it.value)))
+          ns.Say(L.ALERT_CATCH_COUNT_VALUE:format(label, it.count, goldStr(it.value)))
         else
-          ns.Say((L["Nice catch: %s (~%s)"]):format(label, goldStr(it.value)))
+          ns.Say(L.ALERT_CATCH_VALUE:format(label, goldStr(it.value)))
         end
       elseif (it.count or 1) > 1 then
-        ns.Say((L["Nice catch: %s x%d"]):format(label, it.count))
+        ns.Say(L.ALERT_CATCH_COUNT:format(label, it.count))
       else
-        ns.Say((L["Nice catch: %s"]):format(label))
+        ns.Say(L.ALERT_CATCH:format(label))
       end
     end
   end)

@@ -15,8 +15,10 @@ local _, ns = ...
 ns.Casting = ns.Casting or {}
 
 -- Bindings.xml binding label. Its body re-applies the keybind override (self-heal). _G[...] so
--- luacheck ignores these global writes.
-_G.BINDING_NAME_FISHTIPSCAST = ns.L["Cast Fishing"]
+-- luacheck ignores these global writes. Set now and again if the text language changes
+-- (an explicit locale choice applies after this file has loaded) -- a plain global string,
+-- no binding API involved.
+ns.OnLocale(function() _G.BINDING_NAME_FISHTIPSCAST = ns.L.KEYBIND_CAST end)
 
 local DOUBLE_MIN = 0.04  -- ignore right-clicks closer together than this (debounce)
 

@@ -24,6 +24,8 @@ local function resetState()
   M.lootLinkToItem = {}
   M.lootSlotCalls = 0     -- number of LootSlot() calls since install/setLoot
   M.prices = nil          -- Auctionator price map { [itemID] = copper }; nil = not installed
+  M.locale = "enUS"       -- GetLocale(): the client's language
+  M.panel = nil           -- options-panel recording; nil until installSettingsPanel()
   M.printed = {}          -- everything the addon print()ed
   M.frames = {}           -- every mock frame CreateFrame returned
 end
@@ -82,6 +84,72 @@ function M.setPrices(map)
       return M.prices[itemID]
     end,
   } } }
+end
+
+-- Options-panel stub (opt-in, like setPrices): a recording model of the modern Settings
+-- API, covering exactly the calls Settings.lua's RegisterPanel makes. M.panel collects
+-- the section headers, every control (kind, key, name, tooltip, varType, default, its
+-- dropdown options / slider formatter, and its parent nesting) so tests can read the
+-- panel's strings. Absent by default -- without the Settings global RegisterPanel
+-- early-returns, which every other test relies on; install() clears the globals so one
+-- panel test can't leak a registered panel into the next.
+function M.installSettingsPanel()
+  local panel = { headers = {}, controls = {}, byKey = {}, callbacks = {} }
+  M.panel = panel
+  local function control(kind, setting, tooltip)
+    local c = {
+      kind = kind, key = setting.key, name = setting.name, tooltip = tooltip,
+      varType = setting.varType, default = setting.default, setting = setting,
+    }
+    function c:SetParentInitializer(parent, predicate)
+      self.parent = parent
+      self.enabled = predicate
+    end
+    panel.controls[#panel.controls + 1] = c
+    panel.byKey[c.key] = c
+    return c
+  end
+  _G.Settings = {
+    RegisterVerticalLayoutCategory = function(name)
+      panel.categoryName = name
+      local category = { GetID = function() return 1 end }
+      local layout = {
+        AddInitializer = function(_, init) panel.headers[#panel.headers + 1] = init.text end,
+      }
+      return category, layout
+    end,
+    RegisterAddOnSetting = function(_, variable, key, tbl, varType, name, default)
+      return { variable = variable, key = key, tbl = tbl, varType = varType, name = name, default = default }
+    end,
+    CreateControlTextContainer = function()
+      local data = {}
+      return {
+        Add = function(_, value, label) data[#data + 1] = { value = value, label = label } end,
+        GetData = function() return data end,
+      }
+    end,
+    CreateSliderOptions = function(min, max, step)
+      return {
+        min = min, max = max, step = step,
+        SetLabelFormatter = function(self, _, fn) self.formatter = fn end,
+      }
+    end,
+    CreateDropdown = function(_, setting, optionsFn, tooltip)
+      local c = control("dropdown", setting, tooltip)
+      c.options = optionsFn
+      return c
+    end,
+    CreateCheckbox = function(_, setting, tooltip) return control("checkbox", setting, tooltip) end,
+    CreateSlider = function(_, setting, options, tooltip)
+      local c = control("slider", setting, tooltip)
+      c.sliderOptions = options
+      return c
+    end,
+    SetOnValueChangedCallback = function(variable, fn) panel.callbacks[variable] = fn end,
+    RegisterAddOnCategory = function() panel.registered = true end,
+  }
+  _G.CreateSettingsListSectionHeaderInitializer = function(text) return { text = text } end
+  _G.MinimalSliderWithSteppersMixin = { Label = { Right = "right" } }
 end
 
 -- Fire an event into every mock frame registered for it (the harness's event bus).
@@ -157,7 +225,13 @@ function M.install()
     M.printed[#M.printed + 1] = table.concat(parts, " ")
   end
 
+  _G.GetLocale = function() return M.locale end
+
   _G.Auctionator = nil  -- pricing stub is opt-in per test via M.setPrices
+  -- Options-panel stub is opt-in per test via M.installSettingsPanel
+  _G.Settings = nil
+  _G.CreateSettingsListSectionHeaderInitializer = nil
+  _G.MinimalSliderWithSteppersMixin = nil
   _G.FishTipsDB = nil
 end
 

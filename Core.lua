@@ -333,7 +333,7 @@ function ns.GetScopes()
     list[#list + 1] = { key = key, name = c.display or key }
   end
   table.sort(list, function(a, b) return a.name < b.name end)
-  list[#list + 1] = { key = "account", name = ns.L["Warband"] }
+  list[#list + 1] = { key = "account", name = ns.L.SCOPE_WARBAND }
   return list
 end
 
@@ -789,13 +789,13 @@ local function summarizeSession(sess, elapsed)
   if not ns.demoOn and ns.PricingActive() then
     gold = math.floor((ns.GetSessionValue() or 0) / 10000)
   end
+  local castsStr = ns.Plural(sess.casts or 0, ns.L.CASTS_ONE, ns.L.CASTS_MANY)
+  local catchesStr = ns.Plural(catches, ns.L.CATCHES_ONE, ns.L.CATCHES_MANY)
   local line
   if gold > 0 then
-    line = (ns.L["session ended: %d casts, %d catches in %dm (%d/hr), ~%dg."])
-      :format(sess.casts or 0, catches, mins, rate, gold)
+    line = ns.L.CHAT_SESSION_ENDED_VALUE:format(castsStr, catchesStr, mins, rate, gold)
   else
-    line = (ns.L["session ended: %d casts, %d catches in %dm (%d/hr)."])
-      :format(sess.casts or 0, catches, mins, rate)
+    line = ns.L.CHAT_SESSION_ENDED:format(castsStr, catchesStr, mins, rate)
   end
   print("|cffffd36eFish & Tips|r: " .. line)
 end
@@ -1028,7 +1028,7 @@ f:SetScript("OnEvent", function(_, event, arg1, _, arg3)  -- arg3 = spellID (spe
         -- history, so the persisted table is left completely untouched (zero writes; it
         -- re-serializes as-is at logout) and this session runs on a throwaway in-memory
         -- store: tracking and settings work, but none of it persists.
-        print("|cffffd36eFish & Tips|r: " .. (ns.L["your saved data is from a newer version (v%d; this build reads v%d). Running without saving -- catches and settings from this session will NOT persist. Please update the addon."]):format(db.version, DB_VERSION))
+        print("|cffffd36eFish & Tips|r: " .. ns.L.CHAT_NEWER_DATA:format(db.version, DB_VERSION))
         db = { version = DB_VERSION, chars = {} }
       else
         migrate(db)
