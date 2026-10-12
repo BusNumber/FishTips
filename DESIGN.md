@@ -702,7 +702,12 @@ Facts about the current API surface (Midnight, 12.1.x). Most are the reason a gi
 choice looks the way it does — the load-bearing assumptions the design rests on. Any still
 awaiting in-game confirmation are flagged inline. Reviewed against the official 12.1.0 API
 changelog (an aura-security patch: secret aura values, forbidden script objects) — nothing
-the addon uses changed, so the 12.0.x findings below carry forward.
+the addon uses changed, so the 12.0.x findings below carry forward. Reviewed again against
+the 12.1.5 changelog (the `Blizzard_Deprecated*` shim addons removed, a set of FrameXML
+helpers moved native, more secret-value hardening): **one hit** — the loot reader's legacy
+`GetItemInfoInstant` global, now `C_Item.GetItemInfoInstant` (see *Deprecated global
+wrappers are gone* below). The TOC lists both `120100` and `120105`, so one build serves
+12.1.0 and 12.1.5.
 
 - **Fishing state detection.** *Implemented* via `UNIT_SPELLCAST_CHANNEL_START` /
   `UNIT_SPELLCAST_CHANNEL_STOP` (Fishing is a channel) filtered to `unit == "player"` and
@@ -727,8 +732,8 @@ the addon uses changed, so the 12.0.x findings below carry forward.
   fishing by **`IsFishingLoot()`** OR the heuristic (`ns.fishingActive` or loot within ~1s
   of the last fishing channel), so mob/chest loot is never counted. The reader walks
   `GetNumLootItems` and reads each slot with `GetLootSlotLink` (nil for money → not
-  tracked) + `GetLootSlotInfo` (name, quantity, quality); `GetItemInfoInstant(link)` gives
-  the itemID (nil for currency → not tracked). All slots are recorded in one pass, then
+  tracked) + `GetLootSlotInfo` (name, quantity, quality); `C_Item.GetItemInfoInstant(link)`
+  gives the itemID (nil for currency → not tracked). All slots are recorded in one pass, then
   **one** `FireRefresh` repaints the UI. (`IsFishingLoot()` behavior on 12.1.x fishing
   loot awaits the in-game pass; the heuristic keeps working regardless.)
 - **Catch *auto-loot*.** *Implemented.* The same handler, when the `autoLoot` setting is on
@@ -745,6 +750,20 @@ the addon uses changed, so the 12.0.x findings below carry forward.
   `autoLootDefault` CVar on during the fishing window and restore it after (note: as of
   12.1.0 the auto-loot setting is account-wide, so a botched restore would hit every
   character — one more reason this stays a fallback).
+- **Deprecated global wrappers are gone (12.1.5).** 12.1.5 removed the
+  `Blizzard_Deprecated*` shim addons — the legacy global item functions (`GetItemInfo`,
+  `GetItemInfoInstant`, `GetItemIcon`, `GetItemQualityColor`, `GetItemCount`, ~45 in all)
+  plus the currency (`GetCoinTextureString`), sound, socket, PvP, trade, pet, LFG and glue
+  wrappers. Their namespaced forms (`C_Item.*`, `C_CurrencyInfo.*`, `C_Sound.*`, …) have
+  existed since 10.2.x–11.0, so code written against them runs on 12.1.0 and 12.1.5 alike.
+  The one place it bit us was the loot reader's `GetItemInfoInstant(link)`: a nil call
+  inside the `LOOT_READY` handler would have ended every window before recording *or*
+  looting. The guard against a reintroduction is `.luacheckrc` — none of the removed names
+  are in `read_globals`, so lint (run in CI over UI.lua and Casting.lua too, which the
+  suite never loads) fails on any of them; the test stubs model the 12.1.5 client (no
+  legacy global). Cosmetic 12.1.5 note: the client now draws player coordinates below the
+  minimap (`minimapShowPlayerCoords`, default on) — the opt-in minimap button rides the
+  ring, so a button dragged to the bottom may sit on the coords (in-game check).
 - **The cast is a secure *binding* (by name), not a button.** *Implemented (no world overlay, no
   action button).* For the Fishing profession spell on 12.0, a secure button silently no-ops no
   matter how it's configured — `type="spell"` (→ `CastSpellByID(131474/131476)` and

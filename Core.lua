@@ -934,7 +934,9 @@ local function processLoot(nativeAutoLoot)
     local link = GetLootSlotLink(i)  -- nil for money slots
     if link then
       local _, name, quantity, _, quality = GetLootSlotInfo(i)
-      local itemID = GetItemInfoInstant(link)  -- nil for currency -> not tracked
+      -- C_Item namespace (present since 10.2.6): the legacy global GetItemInfoInstant was
+      -- removed in 12.1.5 with the deprecation shims. nil for currency -> not tracked.
+      local itemID = C_Item.GetItemInfoInstant(link)
       if itemID and recordCatchNoRefresh(itemID, quantity or 1, name, quality, link) then
         recorded = recorded + 1
         local unit

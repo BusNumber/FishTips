@@ -210,7 +210,11 @@ function M.install()
     if not s then return nil end
     return "tex", s.name, s.quantity, nil, s.quality
   end
-  _G.GetItemInfoInstant = function(link) return M.lootLinkToItem[link] end
+  -- Models the 12.1.5 client: the deprecation shims are gone, so only the C_Item
+  -- namespace resolves an item link -- the suite must prove Core never calls the legacy
+  -- global GetItemInfoInstant (nil here, exactly as in-game).
+  _G.C_Item = { GetItemInfoInstant = function(link) return M.lootLinkToItem[link] end }
+  _G.GetItemInfoInstant = nil
   _G.LootSlot = function(i)
     M.lootSlotCalls = M.lootSlotCalls + 1
     table.remove(M.lootSlots, i)  -- models the client re-indexing the loot list

@@ -23,8 +23,10 @@ read_globals = {
   "GetBindingKey", "IsMouseButtonDown",
   "GetRealZoneText", "GetSubZoneText", "UnitName", "GetNormalizedRealmName",
   "C_Map", "C_AddOns", "C_Spell", "GetSpellInfo",
-  "GetNumLootItems", "GetLootSlotLink", "GetLootSlotInfo", "GetItemInfoInstant", "LootSlot",
-  "IsFishingLoot",
+  "GetNumLootItems", "GetLootSlotLink", "GetLootSlotInfo", "LootSlot", "IsFishingLoot",
+  -- Deliberately NOT listed: the legacy item/currency/sound globals 12.1.5 removed with the
+  -- Blizzard_Deprecated* shims (GetItemInfo, GetItemInfoInstant, GetItemIcon, ...) -- so
+  -- lint fails on any reintroduction, in UI.lua too (which the test suite never loads).
   "C_Item", "HandleModifiedItemClick",  -- catch-list row icons + shift-click chat linking
   "PlaySound", "SOUNDKIT",  -- rare-catch alert sound (UI.lua)
   "ITEM_QUALITY_COLORS", "STANDARD_TEXT_FONT", "UNKNOWN",

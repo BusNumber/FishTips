@@ -1,7 +1,7 @@
-## Interface: 120100
+## Interface: 120100, 120105
 ## Title: Fish & Tips
 ## Notes: Per-location catch tracking with fishing-only auto-loot, double-right-click cast, and Auctionator price integration.
-## Version: 1.6.1
+## Version: 1.6.2
 ## Author: BusNumber
 ## Category: Professions
 ## IconTexture: Interface\Icons\inv_fishingpole_05
