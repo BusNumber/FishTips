@@ -92,6 +92,11 @@ L["ALERT_CATCH_COUNT_VALUE"] = "Nice catch: %s x%d (~%s)"
 -- Printed once per login, the first time the window is closed mid-fishing.
 L["CHAT_AUTO_OPEN_HINT"] = "Stats window hidden -- it won't auto-open again until after your next fishing break. /ft or the minimap addon drawer reopens it anytime."
 
+-- Printed if the double-click cast's one-shot right-button binding could not be released when
+-- combat began (the game blocks binding changes in combat). A should-never-happen case: the
+-- binding is normally dropped the instant combat starts, which is why the line asks for a report.
+L["CHAT_CAST_STUCK_IN_COMBAT"] = "combat started mid-cast -- the right mouse button stays bound to Cast Fishing until the fight ends (the game blocks binding changes in combat). This shouldn't happen -- please report it so we can look into it."
+
 -- Saved data written by a newer version of the addon: the two %d are version numbers.
 L["CHAT_NEWER_DATA"] = "your saved data is from a newer version (v%d; this build reads v%d). Running without saving -- catches and settings from this session will NOT persist. Please update the addon."
 

@@ -12,6 +12,12 @@ local _, ns = ...
 --   * keybind            -- the player's bound key (Bindings.xml) is override-bound to cast by name.
 --   * double-right-click -- two quick right-downs arm a one-shot BUTTON2 override that casts on the
 --                           second release, then clears. `castDelay` is the double-click window.
+--                           The override lives as briefly as possible: it is cleared at the fishing
+--                           CHANNEL_START (the cast went out), at combat start
+--                           (PLAYER_REGEN_DISABLED -- lockdown begins only AFTER that event, so it is
+--                           the last moment ClearOverrideBindings is allowed), and by a short timer
+--                           as the backstop. A one-shot override that outlived the start of combat
+--                           used to hold BUTTON2 -- no camera mouselook -- for the whole fight.
 ns.Casting = ns.Casting or {}
 
 -- Bindings.xml binding label. Its body re-applies the keybind override (self-heal). _G[...] so
@@ -53,9 +59,21 @@ end
 local keyOwner = CreateFrame("Frame")
 local dblOwner = CreateFrame("Frame")
 
+-- True while the one-shot BUTTON2 override is set. Reset only when ClearOverrideBindings
+-- actually ran, so a combat-blocked clear leaves it set (read by the PLAYER_REGEN_DISABLED branch).
+local dblArmed = false
+
 local function clearDouble()
-  if not InCombatLockdown() then ClearOverrideBindings(dblOwner) end
+  if InCombatLockdown() then return end  -- ClearOverrideBindings is #nocombat
+  ClearOverrideBindings(dblOwner)
+  dblArmed = false
 end
+
+-- The override's job ends the moment the cast goes out. Core fires this notifier at the fishing
+-- CHANNEL_START -- milliseconds after the release that cast -- so the binding doesn't linger for
+-- the rest of the `castDelay + 0.25` timer (which stays as the backstop for a cast that never
+-- starts a channel, e.g. facing land). With nothing armed (keybind / manual casts) it's a no-op.
+ns.RegisterFishingStart(clearDouble)
 
 -- Bind the player's "Cast Fishing" key(s) to cast Fishing by name. Reapplied on login / mode change
 -- / combat-end, and by the Bindings.xml body if it was ever cleared.
@@ -74,7 +92,7 @@ _G.FishTips_RunKeybind = function() applyKeyOverride() end
 -- ---------------------------------------------------------------------------
 -- Double-right-click: time two quick right-downs (GLOBAL_MOUSE_DOWN, non-consuming so camera /
 -- hover are untouched); on the second, arm a one-shot BUTTON2 override that casts on that click's
--- release, then self-clears shortly after.
+-- release. It is cleared at the fishing CHANNEL_START, at combat start, or by the timer below.
 -- ---------------------------------------------------------------------------
 local prevDown, lastCast = 0, 0
 local function onGlobalMouseDown(button)
@@ -86,6 +104,7 @@ local function onGlobalMouseDown(button)
   local diff = now - prevDown
   if diff >= DOUBLE_MIN and diff <= delay() then
     SetOverrideBindingSpell(dblOwner, true, "BUTTON2", fishingName())      -- 2nd release casts
+    dblArmed = true
     lastCast = now
     prevDown = 0
     if C_Timer and C_Timer.After then C_Timer.After(delay() + 0.25, clearDouble) end
@@ -115,11 +134,27 @@ end
 
 local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
+f:RegisterEvent("PLAYER_REGEN_DISABLED")  -- combat begins: the last out-of-combat moment
 f:RegisterEvent("PLAYER_REGEN_ENABLED")
 f:RegisterEvent("GLOBAL_MOUSE_DOWN")
 f:SetScript("OnEvent", function(_, event, arg1)
   if event == "GLOBAL_MOUSE_DOWN" then
     onGlobalMouseDown(arg1)
+  elseif event == "PLAYER_REGEN_DISABLED" then
+    -- Combat lockdown begins AFTER this event fires (API_InCombatLockdown), so a one-shot override
+    -- armed just before the fight can still be dropped here. Before this branch existed its timed
+    -- clear hit the lockdown and no-op'd, and BUTTON2 stayed bound to the cast -- no camera
+    -- mouselook -- until PLAYER_REGEN_ENABLED. Only the transient owner is touched: the keybind
+    -- override is the player's own key and is left alone.
+    local wasArmed = dblArmed
+    clearDouble()
+    if dblArmed then
+      -- The lockdown was already in effect, so the clear was blocked and the binding is stuck
+      -- until combat ends. Say so: a dead right-click with no explanation is the worst outcome.
+      print("|cffffd36eFish & Tips|r: " .. ns.L.CHAT_CAST_STUCK_IN_COMBAT)
+    elseif wasArmed and ns.castDebug then
+      print("|cffffd36eFish & Tips|r: combat started -- double-click override cleared")
+    end
   else
     ns.Casting.ApplyMode()
   end

@@ -377,14 +377,17 @@ spell on 12.0) and **no frame over the world**. Two paths, gated by `castMode`:
   combat; the binding body re-applies it if cleared.
 - **Double-right-click** — detected via the **`GLOBAL_MOUSE_DOWN` event** (NOT
   `WorldFrame:HookScript`, which taints the cast); two quick right-downs arm a **one-shot**
-  `SetOverrideBindingSpell(dblOwner, true, "BUTTON2", <name>)` so the second release casts, then a
-  short `C_Timer` clears it. Arming only mid-double-tap keeps the camera intact.
+  `SetOverrideBindingSpell(dblOwner, true, "BUTTON2", <name>)` so the second release casts; it is
+  cleared as soon as it has done its job — at the fishing `CHANNEL_START`, or at combat start
+  (`PLAYER_REGEN_DISABLED`) — with a short `C_Timer` as the backstop. Arming only mid-double-tap
+  keeps the camera intact.
 
 Keybind and double-click use **separate override owners** so clearing the transient one never
 disturbs the persistent one. All binding changes happen out of combat (login, dropdown change,
+combat start — `PLAYER_REGEN_DISABLED` fires *before* lockdown begins — and combat end,
 `PLAYER_REGEN_ENABLED`). Isolated on purpose — secure/taint-sensitive, kept out of data logic.
 
-> **Lesson (three regressions):** (1) a mouse-enabled frame over the world eats mouse *motion*
+> **Lesson (six regressions):** (1) a mouse-enabled frame over the world eats mouse *motion*
 > (no API forwards motion to `WorldFrame`) so the **hover outline dies**; with
 > `SetPassThroughButtons` the click goes to the world so the **cast never fires**, and plain
 > `SetPropagateMouseClicks` never reaches the world frame so it **breaks mouselook**. Never cover
@@ -402,6 +405,15 @@ disturbs the persistent one. All binding changes happen out of combat (login, dr
 > was dropped entirely in favor of `SetOverrideBindingSpell` (cast **by name**), the same path
 > `/cast Fishing` uses. (5) `WorldFrame:HookScript` taints the secure cast (it no-ops even with a
 > correct binding); detect the double-click via the **`GLOBAL_MOUSE_DOWN` event** instead.
+> (6) The one-shot `BUTTON2` override used to live for `castDelay + 0.25` s after the cast, and
+> its only clear (`ClearOverrideBindings`) is `#nocombat` — so combat starting inside that window
+> **left BUTTON2 bound to the cast for the whole fight** (a right-hold ran a failing spell binding
+> instead of mouselook) until `PLAYER_REGEN_ENABLED`. The fix: clear it the moment it has done
+> its job — at the fishing `CHANNEL_START` (via `ns.RegisterFishingStart`) — and at
+> **`PLAYER_REGEN_DISABLED`**, which fires *before* combat lockdown begins (the last moment a
+> binding change is allowed; the `InCombatLockdown` guard stays, so a build that orders it
+> differently degrades to the old behaviour plus one explanatory chat line, never an error).
+> The timer is now only the backstop for a cast that never starts a channel.
 
 ### UI.lua
 Presentation: the movable stats window (Session/Lifetime + a Session-only "New session"
@@ -774,13 +786,19 @@ wrappers are gone* below). The TOC lists both `120100` and `120105`, so one buil
   `ns.FishingSpellName()` resolver in Core.lua (7620 → 131474 → 131476; success-only
   memoization — see *Fishing state detection*). Two override owners: a **persistent** one for the keybind (the player's "Cast
   Fishing" key, re-applied OOC) and a **transient** one for the double-click (`"BUTTON2"`, armed on
-  the second of two quick right-downs, cleared by a short `C_Timer`). The double-click is detected
+  the second of two quick right-downs, cleared at the fishing `CHANNEL_START`, at combat start, or
+  by a short `C_Timer` backstop). The double-click is detected
   via the **`GLOBAL_MOUSE_DOWN` event** — **not `WorldFrame:HookScript`, which taints the cast so it
   no-ops** even with a correct binding. All binding changes are `InCombatLockdown`-guarded and
-  re-applied on `PLAYER_REGEN_ENABLED`. (**Bugs fixed across iterations:** world overlay broke
+  re-applied on `PLAYER_REGEN_ENABLED`. **Combat lockdown begins *after* `PLAYER_REGEN_DISABLED`
+  fires and ends *before* `PLAYER_REGEN_ENABLED`** (wiki, `API_InCombatLockdown`), so the
+  combat-start event is the last moment `ClearOverrideBindings` is still allowed — Casting.lua
+  drops the transient override there (never the keybind owner), keeping the guard in case a
+  build orders it differently. (**Bugs fixed across iterations:** world overlay broke
   hover/mouselook; first-click arming stuck character-rotate; per-click attribute changes tainted
   the cast; the spell APIs / macrotext don't cast this profession spell; the WorldFrame hook
-  tainted the cast.)
+  tainted the cast; a one-shot override that outlived the start of combat held BUTTON2 — no
+  mouselook — for the whole fight.)
 - **Keybind category.** The cast binding gets its **own "Fish & Tips " top-level category** in Key
   Bindings via `category="Fish &amp; Tips "` in [Bindings.xml](Bindings.xml). A custom category
   that resolves to a global *token* taints; a plain-text value that doesn't — assured by the

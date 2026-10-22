@@ -160,6 +160,14 @@ The cast trigger is chosen with the **Auto-cast** dropdown in options (`off` def
       key casts your fishing line. Hover/mouselook unaffected.
 - [ ] **doubleclick** / **both**: double right-click over water casts; a single right-click
       still interacts/mouselooks and the hover outline still shows; tune the delay slider.
+- [ ] **doubleclick** / **both**, combat at the cast: fish beside a hostile mob and double-click
+      to recast as it reaches you → holding right-click still pans the camera **during** the
+      fight, no chat line appears, and the double-click casts normally after combat (with
+      `/ft castdebug` on, "combat started -- double-click override cleared" prints). Extra
+      clicks are not guarded: a click in the same fast burst can still recast until the
+      channel start arrives from the server (that is where the one-shot binding is released),
+      and a second double-click half a second or more after the first recasts by design — it
+      is the deliberate recast gesture.
 - [ ] No "action blocked" / taint errors, in or out of combat, including after `/reload`;
       switching the dropdown in combat doesn't error.
 
