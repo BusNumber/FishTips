@@ -206,6 +206,15 @@ test("fishing_name_resolver_never_caches_fallback", function()
   assertEq(ns.FishingSpellName(), "P\195\170che", "successful lookup memoized")
 end)
 
+test("fishing_name_resolver_reads_c_spell_only", function()
+  -- 12.1.5 / 12.1.7: the legacy global GetSpellInfo is gone (it went with the 11.x spell
+  -- shims), so the resolver has no fallback to it and a reintroduced one could not hide
+  -- behind the stubs. The name must come through C_Spell.GetSpellName alone.
+  local ns = loadAddon({ setup = function(st) st.spellNames = { [7620] = "Angeln" } end })
+  assertEq(_G.GetSpellInfo, nil, "stubs model the 12.1.5 / 12.1.7 client: no legacy global")
+  assertEq(ns.FishingSpellName(), "Angeln", "resolved through C_Spell.GetSpellName")
+end)
+
 test("downgrade_guard_leaves_db_untouched", function()
   -- SavedVariables stamped by a hypothetical future version, with fields this build
   -- doesn't know. The guard must not write a single byte to it.
@@ -277,14 +286,15 @@ test("records_at_loot_ready_alone", function()
 end)
 
 test("loot_reader_resolves_items_through_c_item", function()
-  -- 12.1.5 removed the deprecation shims, and with them the legacy global
-  -- GetItemInfoInstant the reader used to turn a loot link into an itemID. The stubs model
-  -- that client (no legacy global, C_Item only): a window must still record AND loot --
-  -- i.e. the reader reads C_Item.GetItemInfoInstant (present since 10.2.6), so one build
-  -- serves 12.1.0 and 12.1.5 alike. A nil call here would end every window before either.
+  -- 12.1.5 removed the item deprecation shims, and with them the legacy global
+  -- GetItemInfoInstant the reader used to turn a loot link into an itemID (12.1.7 changed
+  -- nothing here). The stubs model that client (no legacy global, C_Item only): a window
+  -- must still record AND loot -- i.e. the reader reads C_Item.GetItemInfoInstant (present
+  -- since 10.2.6), so one build serves 12.1.5 and 12.1.7 alike. A nil call here would end
+  -- every window before either.
   local ns, S = loadFishing()
   local key = ns.CharKey()
-  assertEq(_G.GetItemInfoInstant, nil, "stubs model the 12.1.5 client: no legacy global")
+  assertEq(_G.GetItemInfoInstant, nil, "stubs model the 12.1.5 / 12.1.7 client: no legacy global")
   S.setLoot({ { itemID = 111, quantity = 1, name = "FishA", quality = 1 } })
   S.fire("LOOT_READY", false)
   assertEq(ns.GetTotals(key, "session").catches, 1, "catch recorded through C_Item")

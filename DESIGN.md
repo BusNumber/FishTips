@@ -718,8 +718,11 @@ the addon uses changed, so the 12.0.x findings below carry forward. Reviewed aga
 the 12.1.5 changelog (the `Blizzard_Deprecated*` shim addons removed, a set of FrameXML
 helpers moved native, more secret-value hardening): **one hit** — the loot reader's legacy
 `GetItemInfoInstant` global, now `C_Item.GetItemInfoInstant` (see *Deprecated global
-wrappers are gone* below). The TOC lists both `120100` and `120105`, so one build serves
-12.1.0 and 12.1.5.
+wrappers are gone* below). Reviewed a third time against 12.1.7 (PTR build 70668, via the
+Blizzard resource lists and FrameXML diffs, since the official API notes were not yet
+published): **zero hits** — nothing the addon calls was removed, renamed or shimmed (see
+*12.1.7 changed nothing we use* below). The TOC lists `120105` and `120107`, so one build
+serves 12.1.5 and 12.1.7; 12.1.0 support was dropped with it.
 
 - **Fishing state detection.** *Implemented* via `UNIT_SPELLCAST_CHANNEL_START` /
   `UNIT_SPELLCAST_CHANNEL_STOP` (Fishing is a channel) filtered to `unit == "player"` and
@@ -728,7 +731,8 @@ wrappers are gone* below). The TOC lists both `120100` and `120105`, so one buil
   `UNIT_SPELLCAST_SUCCEEDED`. Detection matches **either id** *or* the shared **name** "Fishing"
   (so a pole-override variant still registers); the name comes from the single
   `ns.FishingSpellName()` resolver (tries `C_Spell.GetSpellName` on 7620 → 131474 → 131476,
-  legacy `GetSpellInfo` as fallback, **memoizing only a successful lookup** — the
+  with no legacy `GetSpellInfo` fallback since that global is gone on every 12.x client,
+  **memoizing only a successful lookup** — the
   non-localized "Fishing" literal is returned per-call and never cached, so an early nil
   lookup can't poison detection or the cast for the session; Casting.lua uses the same
   resolver). `CHANNEL_START` sets `ns.fishingActive`
@@ -761,21 +765,46 @@ wrappers are gone* below). The TOC lists both `120100` and `120105`, so one buil
   handler loots fully, taint-free, on 12.1.x. **Fallback if it's ever blocked:** toggle the
   `autoLootDefault` CVar on during the fishing window and restore it after (note: as of
   12.1.0 the auto-loot setting is account-wide, so a botched restore would hit every
-  character — one more reason this stays a fallback).
+  character — one more reason this stays a fallback; 12.1.7's `C_CVar.SetTempCVar` /
+  `RemoveTempCVar` would make such an override self-reverting once 12.1.5 support ends).
 - **Deprecated global wrappers are gone (12.1.5).** 12.1.5 removed the
   `Blizzard_Deprecated*` shim addons — the legacy global item functions (`GetItemInfo`,
   `GetItemInfoInstant`, `GetItemIcon`, `GetItemQualityColor`, `GetItemCount`, ~45 in all)
   plus the currency (`GetCoinTextureString`), sound, socket, PvP, trade, pet, LFG and glue
   wrappers. Their namespaced forms (`C_Item.*`, `C_CurrencyInfo.*`, `C_Sound.*`, …) have
-  existed since 10.2.x–11.0, so code written against them runs on 12.1.0 and 12.1.5 alike.
+  existed since 10.2.x–11.0, so code written against them runs on 12.1.5 and 12.1.7 alike.
   The one place it bit us was the loot reader's `GetItemInfoInstant(link)`: a nil call
   inside the `LOOT_READY` handler would have ended every window before recording *or*
   looting. The guard against a reintroduction is `.luacheckrc` — none of the removed names
   are in `read_globals`, so lint (run in CI over UI.lua and Casting.lua too, which the
-  suite never loads) fails on any of them; the test stubs model the 12.1.5 client (no
-  legacy global). Cosmetic 12.1.5 note: the client now draws player coordinates below the
-  minimap (`minimapShowPlayerCoords`, default on) — the opt-in minimap button rides the
-  ring, so a button dragged to the bottom may sit on the coords (in-game check).
+  suite never loads) fails on any of them; the test stubs model the 12.1.5 / 12.1.7 client
+  (no legacy global). The same holds for the legacy spell global `GetSpellInfo`: it went
+  with the 11.x spell shims (no shim defines it on 12.1.0, 12.1.5 or 12.1.7), so the
+  fishing-name resolver reads `C_Spell.GetSpellName` only, the name is off the lint
+  whitelist, and the stubs leave it nil. Cosmetic 12.1.5 note: the client now draws player
+  coordinates below the minimap (`minimapShowPlayerCoords`, default on) — the opt-in
+  minimap button rides the ring, so a button dragged to the bottom may sit on the coords
+  (in-game check).
+- **12.1.7 changed nothing we use (reviewed on PTR build 70668).** Checked name by name
+  against the Blizzard resource lists (global API, events, CVars, FrameXML functions,
+  mixins, templates, widget methods) and the FrameXML diffs for the pieces we lean on
+  (Settings API, StaticPopup, Addon Compartment, LootFrame, Minimap, SecureTemplates): no
+  removal, rename or new deprecation shim touches the addon; the compartment still invokes
+  the handlers as `(addonName, buttonName)` and the Settings API changes are additive
+  (gamepad navigation, an optional `initializer` on `InitDropdown`, a `UIReload` commit
+  flag). Patch-wide changes that don't reach us: creature/object GUIDs are obfuscated (we
+  store none), `GetFrameStrata` can return a secret value (we only *set* strata on our own
+  frames), TOC directives no longer expand `[Game]`/`[Family]` (we use none). **New APIs
+  worth knowing, none used yet** (all absent on 12.1.5, so they wait for its end of life):
+  `C_LootFrame.TryAutoLoot()` is the client's own loot-all (FrameXML binds it to the
+  gamepad "Loot All" prompt; no restriction flag) and could replace the reverse
+  `LootSlot()` loop; `C_AutoLoot.SetUseAutoLootToggle(bool)` is new and undocumented;
+  `C_CVar.SetTempCVar`/`RemoveTempCVar` give self-reverting CVar overrides (see the
+  auto-loot fallback above); `C_Item.DeleteItem(itemGUID)`/`ConfirmDeleteItem` delete by
+  GUID but are restricted (see *Junk auto-discard* in the roadmap); `GLOBAL_REGION_MOUSE_DOWN`
+  / `_UP` fire with `(region, button)` and could let the double-click detector ignore
+  right-clicks that land on UI frames; `C_SkillInfo.*` exposes skill lines (Classic-origin;
+  Mainline behavior unknown) and is worth a poke for the deferred skill display.
 - **The cast is a secure *binding* (by name), not a button.** *Implemented (no world overlay, no
   action button).* For the Fishing profession spell on 12.0, a secure button silently no-ops no
   matter how it's configured — `type="spell"` (→ `CastSpellByID(131474/131476)` and
@@ -900,11 +929,16 @@ These plug in behind the existing seams without changing the UI layer:
   `C_Container.UseContainerItem(bag, slot)` (the standard vendor auto-sell pattern, proven on 12.0.7; a
   separate vendor-time feature, subject to a sell-rate throttle). *Deleting* grays on catch is
   **not feasible** — `DeleteCursorItem` needs a per-item hardware event and is macro-protected,
-  so it can't run from the loot handler.
+  so it can't run from the loot handler. 12.1.7's `C_Item.DeleteItem(itemGUID)` /
+  `ConfirmDeleteItem` don't change that (they are flagged restricted too), but deleting by
+  GUID needs no cursor pickup, so a per-click "discard grays" control becomes conceivable
+  once 12.1.5 support ends.
 - **Splash/bite detection** — *not possible* via a clean API; listed only to record that
   it was considered and rejected.
 - **Fishing-skill display** — blocked-ish API (see gotchas); revisit if Blizzard exposes a
-  journal/statistics API.
+  journal/statistics API. 12.1.7 adds `C_SkillInfo.GetSkillLineInfo`/`GetSkillLineInfoByID`
+  (the Classic skill-line API, now in the shared binary) — whether Mainline returns Fishing
+  through it is an in-game question.
 - Auto-best-lure (secure button, prompt-not-silent), one-click gear/outfit swap
   (`C_EquipmentSet`, out of combat), and enhanced/forced sound while fishing. (Gold/AH
   value: the **session price overlay shipped** — see *What it does* §4; per-zone

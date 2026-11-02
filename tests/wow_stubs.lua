@@ -190,15 +190,13 @@ function M.install()
 
   _G.C_Map = { GetBestMapForUnit = function() return M.mapID end }
 
+  -- Models the 12.1.5 / 12.1.7 client: the spell name comes from C_Spell alone. The legacy
+  -- global GetSpellInfo went with the 11.x deprecation shims, so it is nil here exactly as
+  -- in-game -- the suite must prove the resolver never falls back to it.
   _G.C_Spell = {
     GetSpellName = function(id) return M.spellNames[id] end,
-    GetSpellInfo = function(id)
-      local n = M.spellNames[id]
-      if n then return { name = n } end
-      return nil
-    end,
   }
-  _G.GetSpellInfo = function(id) return M.spellNames[id] end
+  _G.GetSpellInfo = nil
 
   _G.GetNumLootItems = function() return #M.lootSlots end
   _G.GetLootSlotLink = function(i)
@@ -210,9 +208,9 @@ function M.install()
     if not s then return nil end
     return "tex", s.name, s.quantity, nil, s.quality
   end
-  -- Models the 12.1.5 client: the deprecation shims are gone, so only the C_Item
-  -- namespace resolves an item link -- the suite must prove Core never calls the legacy
-  -- global GetItemInfoInstant (nil here, exactly as in-game).
+  -- Models the 12.1.5 / 12.1.7 client: the item deprecation shims are gone, so only the
+  -- C_Item namespace resolves an item link -- the suite must prove Core never calls the
+  -- legacy global GetItemInfoInstant (nil here, exactly as in-game).
   _G.C_Item = { GetItemInfoInstant = function(link) return M.lootLinkToItem[link] end }
   _G.GetItemInfoInstant = nil
   _G.LootSlot = function(i)

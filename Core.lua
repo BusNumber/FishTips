@@ -671,6 +671,8 @@ local FISHING_BASE_ID = 7620       -- classic base "Fishing" skill; most reliabl
 -- Memoized only on a SUCCESSFUL lookup: the non-localized "Fishing" literal is returned
 -- per-call and never cached, so an early nil lookup can't poison the name for the whole
 -- session (on a non-English client a cached literal would silently break the cast).
+-- C_Spell.GetSpellName is native on every 12.x client; the legacy GetSpellInfo global went
+-- with the 11.x deprecation shims, so there is no fallback to it (lint rejects the name).
 local fishingName
 function ns.FishingSpellName()
   if fishingName then return fishingName end
@@ -679,17 +681,12 @@ function ns.FishingSpellName()
     n = C_Spell.GetSpellName(FISHING_BASE_ID) or C_Spell.GetSpellName(FISHING_CHANNEL_ID)
         or C_Spell.GetSpellName(FISHING_SPELL_ID)
   end
-  if not n and GetSpellInfo then
-    n = GetSpellInfo(FISHING_BASE_ID) or GetSpellInfo(FISHING_CHANNEL_ID)
-        or GetSpellInfo(FISHING_SPELL_ID)
-  end
   if n then fishingName = n end
   return n or "Fishing"
 end
 
 local function spellNameByID(spellID)
   if C_Spell and C_Spell.GetSpellName then return C_Spell.GetSpellName(spellID) end
-  if GetSpellInfo then return (GetSpellInfo(spellID)) end
   return nil
 end
 

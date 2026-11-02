@@ -22,11 +22,13 @@ read_globals = {
   "SetOverrideBindingClick", "SetOverrideBindingSpell", "ClearOverrideBindings",
   "GetBindingKey", "IsMouseButtonDown",
   "GetRealZoneText", "GetSubZoneText", "UnitName", "GetNormalizedRealmName",
-  "C_Map", "C_AddOns", "C_Spell", "GetSpellInfo",
+  "C_Map", "C_AddOns", "C_Spell",
   "GetNumLootItems", "GetLootSlotLink", "GetLootSlotInfo", "LootSlot", "IsFishingLoot",
   -- Deliberately NOT listed: the legacy item/currency/sound globals 12.1.5 removed with the
-  -- Blizzard_Deprecated* shims (GetItemInfo, GetItemInfoInstant, GetItemIcon, ...) -- so
-  -- lint fails on any reintroduction, in UI.lua too (which the test suite never loads).
+  -- Blizzard_Deprecated* shims (GetItemInfo, GetItemInfoInstant, GetItemIcon, ...), nor the
+  -- legacy spell global GetSpellInfo (gone with the 11.x spell shims; C_Spell.GetSpellName
+  -- is the only resolver) -- so lint fails on any reintroduction, in UI.lua too (which the
+  -- test suite never loads).
   "C_Item", "HandleModifiedItemClick",  -- catch-list row icons + shift-click chat linking
   "PlaySound", "SOUNDKIT",  -- rare-catch alert sound (UI.lua)
   "ITEM_QUALITY_COLORS", "STANDARD_TEXT_FONT", "UNKNOWN",
